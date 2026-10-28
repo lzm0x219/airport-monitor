@@ -9,9 +9,29 @@ struct AirportMonitorApp {
     @MainActor static func main() {
         let app = NSApplication.shared
         let controller = ApplicationController()
+        let arguments = CommandLine.arguments
+        let review = arguments.contains("--workspace-review")
+        let demo = arguments.contains("--design-demo")
+        let directory = review || demo
+            ? FileManager.default.temporaryDirectory.appendingPathComponent(review ? "AirportMonitorReviewInstance" : "AirportMonitorDemoInstance")
+            : NativeRepository.defaultRoot
+        let instance: SingleInstanceCoordinator
+        do {
+            guard let owner = try SingleInstanceCoordinator.start(directory: directory, onReopen: { [weak controller] in
+                controller?.requestReopen()
+            }) else { return }
+            instance = owner
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "无法启动 Airport Monitor"
+            alert.informativeText = "无法检查是否已有应用正在运行。请检查应用数据目录的权限后重试。"
+            alert.alertStyle = .warning
+            alert.runModal()
+            return
+        }
         app.delegate = controller
         app.setActivationPolicy(.accessory)
-        withExtendedLifetime(controller) { app.run() }
+        withExtendedLifetime((controller, instance)) { app.run() }
     }
 }
 
@@ -21,6 +41,7 @@ final class ApplicationController: NSObject, NSApplicationDelegate, NSToolbarDel
     private let workspaceToolbarState = WorkspaceToolbarState()
     private var status: StatusController!
     private var settingsWindow: NSWindow?
+    private var reopenAfterLaunch = false
     func applicationDidFinishLaunching(_ notification: Notification) {
         let demo = CommandLine.arguments.contains("--design-demo")
         if demo && CommandLine.arguments.contains("--light") { NSApp.appearance = NSAppearance(named: .aqua) }
@@ -47,6 +68,7 @@ final class ApplicationController: NSObject, NSApplicationDelegate, NSToolbarDel
         }
         status = StatusController(workspace: workspace, openMain: { [weak self] in self?.showMain() }, openSettings: { [weak self] in self?.showSettings() })
         makeMenu()
+        if reopenAfterLaunch { reopenAfterLaunch = false; requestReopen() }
         if (demo || workspace.isIsolatedReview) && CommandLine.arguments.contains("--show-settings") {
             showSettings()
             return
@@ -62,8 +84,12 @@ final class ApplicationController: NSObject, NSApplicationDelegate, NSToolbarDel
         }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if status?.isPopoverVisible == true || settingsWindow?.isVisible == true { return true }
-        showMain(); return true
+        requestReopen(); return false
+    }
+    func requestReopen() {
+        guard workspace != nil, status != nil else { reopenAfterLaunch = true; return }
+        if status.isPopoverVisible { NSApp.activate(ignoringOtherApps: true); return }
+        showMain()
     }
     @objc private func showSettings() {
         workspace.page = .settings; showMain()
@@ -99,6 +125,7 @@ final class ApplicationController: NSObject, NSApplicationDelegate, NSToolbarDel
             window.center(); settingsWindow = window
         }
         NSApp.activate(ignoringOtherApps: true)
+        if settingsWindow?.isMiniaturized == true { settingsWindow?.deminiaturize(nil) }
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
