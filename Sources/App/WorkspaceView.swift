@@ -1,20 +1,6 @@
 import SwiftUI
 import AppKit
 
-enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, menuBar, sync, privacy, about
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .general: "通用"
-        case .menuBar: "菜单栏"
-        case .sync: "同步与提醒"
-        case .privacy: "数据与隐私"
-        case .about: "关于"
-        }
-    }
-}
-
 struct SettingsPageState {
     var section: SettingsSection = .general
     var scrollAnchors: [SettingsSection: String] = [:]
@@ -64,7 +50,7 @@ struct WorkspaceView: View {
                     onSettings: {
                         returnToEditor = true
                         settingsState.section = .sync; settingsState.restoredSelection = true
-                        workspace.defaults.set(SettingsSection.sync.rawValue, forKey: "settings.selectedSection")
+                        workspace.rememberSettingsSection(.sync)
                         presentedEditor = nil; clearFeedback(); workspace.page = .settings
                     })
             }

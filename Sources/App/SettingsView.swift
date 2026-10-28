@@ -30,8 +30,7 @@ struct SettingsView: View {
             .focusEffectDisabled()
             .task {
                 if !state.restoredSelection {
-                    if let saved = workspace.defaults.string(forKey: "settings.selectedSection"),
-                       let section = SettingsSection(rawValue: saved) { state.section = section }
+                    if let section = workspace.savedSettingsSection { state.section = section }
                     state.restoredSelection = true
                 }
                 await workspace.refreshNotificationAuthorization()
@@ -91,7 +90,7 @@ struct SettingsView: View {
         focusedTab = section
         guard state.section != section else { return }
         state.section = section
-        workspace.defaults.set(section.rawValue, forKey: "settings.selectedSection")
+        workspace.rememberSettingsSection(section)
     }
     private func focusAndSelect(_ section: SettingsSection) {
         select(section); focusedTab = section

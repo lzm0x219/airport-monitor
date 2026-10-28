@@ -35,4 +35,4 @@ Status: implemented-candidate
 
 旧UsageSummary及ForecastReason保留供既有调用；新界面应消费UsageReport的可选bytes、unallocated／partial／excluded，以及ForecastDiagnostic，不把兼容字段0或泛化reason当成完整含义。ForecastEstimate.coverage仅是兼容字段，不代表概率或置信度。
 
-主页面预测文案随规则同步；状态栏MenuQuotaPresentation、共享风险色、重置展示和格式器不变。完整双图和旧来源查看界面在12接入，三类通知在11消费资格，桌面大数据性能与真实服务商差异在13验收。
+主页面预测文案随规则同步；状态栏的额度呈现、共享风险色和重置展示保持独立。现行界面和验证范围分别见[设计规范](../../DESIGN.md)与[验证记录](../../VALIDATION.md)。

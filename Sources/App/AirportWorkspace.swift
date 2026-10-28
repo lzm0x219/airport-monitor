@@ -69,6 +69,20 @@ enum WorkspacePage: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum SettingsSection: String, CaseIterable, Identifiable {
+    case general, menuBar, sync, privacy, about
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .general: "通用"
+        case .menuBar: "菜单栏"
+        case .sync: "同步与提醒"
+        case .privacy: "数据与隐私"
+        case .about: "关于"
+        }
+    }
+}
+
 enum AppAppearance: String, CaseIterable {
     case system, light, dark
     var label: String { switch self { case .system: "跟随系统"; case .light: "浅色"; case .dark: "深色" } }
@@ -245,6 +259,14 @@ final class AirportWorkspace: ObservableObject {
         menuPanelLayout = value
         panelExplanationOpen = false
         if !isDemo { defaults.set(value.rawValue, forKey: "menuPanelLayout.v1") }
+    }
+
+    var savedSettingsSection: SettingsSection? {
+        defaults.string(forKey: "settings.selectedSection").flatMap(SettingsSection.init(rawValue:))
+    }
+
+    func rememberSettingsSection(_ section: SettingsSection) {
+        if !isDemo { defaults.set(section.rawValue, forKey: "settings.selectedSection") }
     }
 
     private func persist() {

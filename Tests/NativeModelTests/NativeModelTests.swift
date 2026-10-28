@@ -160,6 +160,34 @@ struct NativeModelTests {
         #expect(workspace.appearanceMode == .dark)
         #expect(defaults.string(forKey: "appearanceMode.v1") == "light")
     }
+    @Test func demoSettingsSelectionDoesNotWritePreferences() {
+        let suite = "SettingsSelectionIsolation.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("privacy", forKey: "settings.selectedSection")
+        let workspace = AirportWorkspace(demo: true, defaults: defaults)
+        #expect(workspace.savedSettingsSection == .privacy)
+        for section in SettingsSection.allCases {
+            workspace.rememberSettingsSection(section)
+            #expect(defaults.string(forKey: "settings.selectedSection") == "privacy")
+        }
+        defaults.removeObject(forKey: "settings.selectedSection")
+        workspace.rememberSettingsSection(.sync)
+        #expect(defaults.object(forKey: "settings.selectedSection") == nil)
+    }
+    @Test func normalAndIsolatedReviewSettingsSelectionsPersist() throws {
+        let fixture = try NativeRepositoryTests.Fixture(); defer { fixture.cleanup() }
+        for isolatedReview in [false, true] {
+            let workspace = AirportWorkspace(defaults: fixture.defaults, historyDirectory: fixture.root,
+                                             services: fixture.vault.services, startAutomatically: false,
+                                             isolatedReview: isolatedReview)
+            workspace.rememberSettingsSection(.sync)
+            #expect(workspace.savedSettingsSection == .sync)
+            workspace.rememberSettingsSection(.about)
+            #expect(fixture.defaults.string(forKey: "settings.selectedSection") == "about")
+        }
+        #expect(fixture.vault.fetches == 0)
+    }
     @Test func corruptCatalogIsPreservedAndBlocksReplacement() async {
         let suite = "BrokenCatalog.\(UUID().uuidString)", data = Data("invalid-json".utf8)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

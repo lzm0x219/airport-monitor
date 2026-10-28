@@ -1,7 +1,7 @@
 # 产品重启后的原生实施目标
 
 Date: 2026-10-23
-Status: planned
+Status: 历史规划；现行范围见 [PRODUCT.md](../../PRODUCT.md) 和 [USAGE.md](../../USAGE.md)。
 
 ## 背景
 
