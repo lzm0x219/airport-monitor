@@ -93,6 +93,7 @@ final class MonitorModel: ObservableObject {
     @Published private(set) var syncPending = false
     private(set) var archived = false
     private var readLifecycle = SubscriptionReadLifecycle()
+    private var preparingRead: UUID?
     private var monitoringStarted = false
     private var syncLogBlocked = false
     private var dayRecords: [DateInterval: DailyUsage] = [:]
@@ -305,6 +306,7 @@ final class MonitorModel: ObservableObject {
     /// Invalidates both successful and failed completions, even if a transport ignores cancellation.
     func invalidateRequests() {
         readLifecycle.invalidate()
+        preparingRead = nil
         busy = false
     }
 
@@ -339,10 +341,36 @@ final class MonitorModel: ObservableObject {
     }
 
     func refresh(purpose: SyncPurpose = .manual) async {
-        guard !Task.isCancelled, !busy, !storageBlocked, !isDemo, canFetch(purpose) else { return }
+        guard !Task.isCancelled, !busy, preparingRead == nil, !storageBlocked, !isDemo else { return }
+        let preparation = UUID()
+        preparingRead = preparation
+        defer { if preparingRead == preparation { preparingRead = nil } }
+        let preparingGeneration = readLifecycle.generation
+        if let repository {
+            while true {
+                do { try repository.synchronize(); break }
+                catch RepositoryConflict.busy {
+                    do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                    guard !Task.isCancelled, preparingRead == preparation,
+                          readLifecycle.generation == preparingGeneration else { return }
+                }
+                catch { settingsMessage = "本地数据暂时无法同步，请稍后重试。"; return }
+            }
+        }
+        guard !Task.isCancelled, canFetch(purpose) else { return }
         let source = airportID.flatMap { repository?.source(for: $0) }
         let sourceID = profileID, credential = source?.credentialReference ?? credentialAccount
+        let context: ObservationContext? = {
+            guard let airportID, let source, let repository,
+                  let profile = repository.snapshot.catalog.profiles.first(where: { $0.id == airportID }) else { return nil }
+            return ObservationContext(airportID: airportID, sourceID: source.id,
+                credentialReference: source.credentialReference, readRevision: source.effectiveReadContextRevision,
+                externalReadGeneration: repository.externalReadGeneration(for: airportID),
+                enabled: profile.enabled, archived: profile.archived)
+        }()
+        if repository != nil && context == nil { return }
         guard let token = readLifecycle.begin() else { return }
+        if preparingRead == preparation { preparingRead = nil }
         func eligible() -> Bool {
             guard readLifecycle.isActive(token),
                   profileID == sourceID, canFetch(purpose) else { return false }
@@ -351,6 +379,18 @@ final class MonitorModel: ObservableObject {
                       current.credentialReference == credential else { return false }
             }
             return true
+        }
+        func store(_ outcome: SubscriptionReadOutcome, at date: Date) async throws -> SourceRecord? {
+            guard let repository, let context else { return nil }
+            while true {
+                do { return try repository.recordRead(outcome, at: date, context: context) }
+                catch RepositoryConflict.busy {
+                    // Keep the completed result while another process publishes;
+                    // cancellation or a context change still stops the retry.
+                    try await Task.sleep(for: .milliseconds(100))
+                    guard eligible(), !Task.isCancelled, !readLifecycle.taskIsCancelled(token) else { throw CancellationError() }
+                }
+            }
         }
         busy = true
         defer {
@@ -367,21 +407,19 @@ final class MonitorModel: ObservableObject {
             guard readLifecycle.attach(request, to: token) else { return }
             let result = try await withTaskCancellationHandler(operation: { try await request.value }, onCancel: { request.cancel() })
             guard eligible(), !Task.isCancelled, !request.isCancelled else { return }
-            var updated = ledger
             let observedAt = services.now()
-            try updated.append(result, at: observedAt)
+            let updated: Ledger
             do {
-                if let repository, let airportID, var source = repository.source(for: airportID) {
-                    if let previous = source.ledger.samples.last {
-                        source.lastContinuity = result.upload < previous.subscription.upload || result.download < previous.subscription.download ? .counterChanged :
-                            result.total != previous.subscription.total ? .quotaChanged :
-                            source.resetRule.crosses(previous.date, observedAt) ? .resetBoundary : .continued
-                    } else { source.lastContinuity = .baseline }
-                    source.ledger = updated; source.needsVerification = false
-                    source.syncAttempts.insert(SyncAttempt(date: observedAt, subscription: result, message: nil), at: 0)
-                    try repository.updateSource(source)
+                if repository != nil {
+                    guard let source = try await store(.success(result), at: observedAt) else { return }
+                    updated = source.ledger
                     syncAttempts = source.syncAttempts; linkVerificationPending = false
-                } else { try historyStore.save(updated) }
+                } else {
+                    var legacy = ledger
+                    try legacy.append(result, at: observedAt)
+                    try historyStore.save(legacy)
+                    updated = legacy
+                }
             } catch { throw TrafficError.storage }
             ledger = updated
             error = nil; syncPending = false
@@ -398,8 +436,16 @@ final class MonitorModel: ObservableObject {
         } catch {
             guard eligible(), !Task.isCancelled, !readLifecycle.taskIsCancelled(token),
                   !(error is CancellationError), (error as? URLError)?.code != .cancelled else { return }
-            self.error = error.localizedDescription
-            recordSync(subscription: nil, message: error.localizedDescription)
+            let message = error.localizedDescription
+            if repository != nil {
+                do {
+                    guard let source = try await store(.failure(message), at: services.now()) else { return }
+                    syncAttempts = source.syncAttempts
+                } catch is CancellationError { return }
+                catch { settingsMessage = "同步记录未能保存，原记录保留。" }
+            } else { recordSync(subscription: nil, message: message) }
+            guard eligible(), !Task.isCancelled else { return }
+            self.error = message
             if readLifecycle.finish(token) { busy = false }
             await evaluateReminders()
         }
@@ -536,6 +582,15 @@ final class MonitorModel: ObservableObject {
 
     func evaluateReminders() async {
         guard !isDemo, !storageBlocked, let repository, let airportID else { return }
+        let generation = readLifecycle.generation
+        while true {
+            do { try repository.synchronize(); break }
+            catch RepositoryConflict.busy {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                guard !Task.isCancelled, readLifecycle.generation == generation else { return }
+            }
+            catch { reminderDeliveryStatus = .storageFailure; return }
+        }
         guard resetReminderConfirmationsIfNeeded() else { reminderDeliveryStatus = .storageFailure; return }
         var delivery = services.reminderServices ?? ReminderServices()
         if services.reminderServices == nil {
@@ -645,8 +700,8 @@ final class MonitorModel: ObservableObject {
         catch { settingsMessage = "同步记录未能保存，套餐采样和原记录保留。" }
     }
 
-    func applyStoredSource(_ source: SourceRecord) {
-        invalidateRequests()
+    func applyStoredSource(_ source: SourceRecord, invalidateRead: Bool = true) {
+        if invalidateRead { invalidateRequests() }
         let sameReading = profileID == source.id && latest?.id == source.ledger.samples.last?.id
         let previousError = sameReading ? error : nil
         profileID = source.id; ledger = source.ledger; syncAttempts = source.syncAttempts

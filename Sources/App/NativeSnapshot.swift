@@ -24,6 +24,9 @@ struct MonitoringGap: Codable {
 struct SourceRecord: Codable, Identifiable {
     var id: String
     var revision = UUID()
+    // Changes only when an in-flight subscription reading can no longer be applied.
+    // Missing in older snapshots: their existing source revision is the safe fallback.
+    var readContextRevision: UUID?
     var airportID: UUID
     var credentialReference: String
     var createdAt: Date
@@ -46,6 +49,7 @@ struct SourceRecord: Codable, Identifiable {
     var lastContinuity: ContinuityCheck?
     var importedLegacyFile: String?
     var resetRule: ResetRule { resetRevisions.last!.rule }
+    var effectiveReadContextRevision: UUID { readContextRevision ?? revision }
 
     mutating func clearReminderConfirmations() {
         reminderState?.lowRecovery = nil; reminderState?.exhaustionRecovery = nil

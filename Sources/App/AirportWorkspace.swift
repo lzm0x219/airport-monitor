@@ -132,11 +132,48 @@ final class AirportWorkspace: ObservableObject {
             publishing = true; profiles = store.snapshot.catalog.profiles; menuAirport = store.snapshot.catalog.menuAirport
             for p in profiles { attach(makeMonitor(p, automatically: startAutomatically), to: p.id) }
             publishing = false
+            store.onExternalChange = { [weak self] previous, current, preservedRequest in
+                self?.applyExternalSnapshot(previous: previous, current: current, preservedRequest: preservedRequest)
+            }
         } catch {
             catalogBlocked = true
             message = "配置或历史无法安全迁移／恢复，原文件与配置已保留；请检查备份及存储权限后重开。"
         }
         browsingAirport = activeProfiles.first?.id
+    }
+
+    private func applyExternalSnapshot(previous: NativeSnapshot, current: NativeSnapshot, preservedRequest: UUID?) {
+        let oldProfiles = previous.catalog.profiles
+        publishing = true
+        profiles = current.catalog.profiles
+        menuAirport = current.catalog.menuAirport
+        publishing = false
+        for id in Array(monitors.keys) where !profiles.contains(where: { $0.id == id }) {
+            monitors.removeValue(forKey: id)?.stop()
+            observations.removeValue(forKey: id)?.cancel()
+        }
+        for profile in profiles {
+            guard let source = current.sources.first(where: { $0.id == profile.historyID && $0.airportID == profile.id }) else { continue }
+            guard let monitor = monitors[profile.id] else {
+                attach(makeMonitor(profile, automatically: startAutomatically), to: profile.id)
+                continue
+            }
+            let oldProfile = oldProfiles.first { $0.id == profile.id }
+            let oldSource = oldProfile.flatMap { old in previous.sources.first { $0.id == old.historyID && $0.airportID == old.id } }
+            let lifecycleChanged = oldProfile?.enabled != profile.enabled || oldProfile?.archived != profile.archived
+            if oldSource?.revision != source.revision || oldSource?.id != source.id {
+                let readChanged = oldSource?.effectiveReadContextRevision != source.effectiveReadContextRevision || lifecycleChanged
+                monitor.applyStoredSource(source, invalidateRead: readChanged && preservedRequest != profile.id)
+            }
+            if lifecycleChanged {
+                monitor.setLifecycle(enabled: profile.enabled, archived: profile.archived, refreshOnResume: false)
+            }
+            if previous.statisticsTimeZone != current.statisticsTimeZone { monitor.statisticsTimeZoneDidChange() }
+        }
+        if browsingAirport == nil || !activeProfiles.contains(where: { $0.id == browsingAirport }) {
+            browsingAirport = activeProfiles.first?.id
+        }
+        objectWillChange.send()
     }
 
     private func makeMonitor(_ profile: AirportProfile, automatically: Bool) -> MonitorModel {

@@ -10,6 +10,22 @@ enum RepositoryCheckpoint: CaseIterable {
 
 // A test-only injected process interruption must leave the journal just as a killed process would.
 enum RepositoryInterruption: Error { case simulatedCrash }
+enum RepositoryConflict: Error { case stale, busy }
+
+struct ObservationContext {
+    let airportID: UUID
+    let sourceID: String
+    let credentialReference: String
+    let readRevision: UUID
+    let externalReadGeneration: UUID?
+    let enabled: Bool
+    let archived: Bool
+}
+
+enum SubscriptionReadOutcome {
+    case success(Subscription)
+    case failure(String)
+}
 
 private struct CommitIntent: Codable {
     var version = 1
@@ -31,6 +47,8 @@ final class NativeRepository {
     private let checkpoint: (RepositoryCheckpoint) throws -> Void
     private(set) var snapshot: NativeSnapshot
     private(set) var recoveryPending = false
+    private var externalReadGenerations: [UUID: UUID] = [:]
+    var onExternalChange: ((NativeSnapshot, NativeSnapshot, UUID?) -> Void)?
     var stateURL: URL { directory.appendingPathComponent("state.json") }
     var backupURL: URL { directory.appendingPathComponent("previous-state.json") }
     private var intentURL: URL { directory.appendingPathComponent("commit.json") }
@@ -80,7 +98,12 @@ final class NativeRepository {
         try prepareDirectory(directory)
         let descriptor = open(directory.appendingPathComponent("store.lock").path, O_CREAT | O_RDWR, 0o600)
         guard descriptor >= 0 else { throw TrafficError.storage }
-        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { close(descriptor); throw TrafficError.storage }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            let reason = errno
+            close(descriptor)
+            if reason == EWOULDBLOCK || reason == EAGAIN { throw RepositoryConflict.busy }
+            throw TrafficError.storage
+        }
         return descriptor
     }
     private static func write(_ data: Data, to url: URL) throws {
@@ -99,6 +122,54 @@ final class NativeRepository {
         return snapshot.sources.first { $0.id == profile.historyID && $0.airportID == airportID }
     }
     func history(for airportID: UUID) -> [SourceRecord] { snapshot.sources.filter { $0.airportID == airportID } }
+    func externalReadGeneration(for airportID: UUID) -> UUID? { externalReadGenerations[airportID] }
+
+    /// Remember externally changed read contexts separately from local edits.
+    @discardableResult
+    private func adopt(_ published: NativeSnapshot) -> NativeSnapshot? {
+        guard published.revision != snapshot.revision else { return nil }
+        let previous = snapshot
+        let ids = Set(previous.catalog.profiles.map(\.id) + published.catalog.profiles.map(\.id))
+        for id in ids {
+            let before = previous.catalog.profiles.first { $0.id == id }
+            let after = published.catalog.profiles.first { $0.id == id }
+            let oldSource = before.flatMap { profile in previous.sources.first { $0.id == profile.historyID && $0.airportID == id } }
+            let newSource = after.flatMap { profile in published.sources.first { $0.id == profile.historyID && $0.airportID == id } }
+            if before?.historyID != after?.historyID || before?.enabled != after?.enabled || before?.archived != after?.archived ||
+                oldSource?.credentialReference != newSource?.credentialReference ||
+                oldSource?.effectiveReadContextRevision != newSource?.effectiveReadContextRevision {
+                externalReadGenerations[id] = UUID()
+            }
+        }
+        snapshot = published
+        return previous
+    }
+
+    /// Load other instances' committed state before starting work from local state.
+    func synchronize() throws {
+        var previous: NativeSnapshot?
+        defer { if let previous { onExternalChange?(previous, snapshot, nil) } }
+        let lock = try Self.lock(directory)
+        defer { flock(lock, LOCK_UN); close(lock) }
+        let published = try readPublishedSnapshot()
+        previous = adopt(published)
+        try recoverCommit()
+    }
+
+    private func readPublishedSnapshot() throws -> NativeSnapshot {
+        let published = try JSONDecoder().decode(NativeSnapshot.self, from: Data(contentsOf: stateURL))
+        try published.validate()
+        return published
+    }
+
+    /// Only these changes make a response from an already-started read unsafe.
+    private static func sameReadContext(_ first: SourceRecord, _ second: SourceRecord) throws -> Bool {
+        guard first.id == second.id, first.credentialReference == second.credentialReference,
+              first.needsVerification == second.needsVerification else { return false }
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        return try encoder.encode(first.ledger) == encoder.encode(second.ledger)
+            && encoder.encode(first.resetRevisions) == encoder.encode(second.resetRevisions)
+    }
 
     var unassociatedHistories: [LegacyFileRecord] {
         snapshot.migration.files.filter { file in
@@ -147,11 +218,20 @@ final class NativeRepository {
     }
 
     private func commit(_ value: NativeSnapshot, credential: (String, String)? = nil) throws {
+        var previous: NativeSnapshot?
+        defer { if let previous { onExternalChange?(previous, snapshot, nil) } }
         let lock = try Self.lock(directory)
         defer { flock(lock, LOCK_UN); close(lock) }
-        let published = try JSONDecoder().decode(NativeSnapshot.self, from: Data(contentsOf: stateURL))
-        try published.validate()
-        guard published.revision == snapshot.revision else { throw TrafficError.storage }
+        let published = try readPublishedSnapshot()
+        if let old = adopt(published) {
+            previous = old
+            try recoverCommit()
+            throw RepositoryConflict.stale
+        }
+        try commitLocked(value, credential: credential)
+    }
+
+    private func commitLocked(_ value: NativeSnapshot, credential: (String, String)? = nil) throws {
         try recoverCommit()
         var next = value; next.revision = UUID(); try next.validate()
         let intent = CommitIntent(revision: next.revision, stagedCredential: credential?.0)
@@ -179,6 +259,51 @@ final class NativeRepository {
             do { try recoverCommit() } catch { recoveryPending = true }
             throw error
         }
+    }
+
+    /// Rebase a completed read onto the latest snapshot under the same file lock.
+    /// A change to its read context discards the result rather than guessing its identity.
+    func recordRead(_ outcome: SubscriptionReadOutcome, at date: Date, context: ObservationContext) throws -> SourceRecord? {
+        var previous: NativeSnapshot?
+        var preserveRequest: UUID?
+        defer { if let previous { onExternalChange?(previous, snapshot, preserveRequest) } }
+        let lock = try Self.lock(directory)
+        defer { flock(lock, LOCK_UN); close(lock) }
+        let published = try readPublishedSnapshot()
+        previous = adopt(published)
+        try recoverCommit()
+        guard let profile = snapshot.catalog.profiles.first(where: { $0.id == context.airportID }),
+              profile.historyID == context.sourceID, profile.enabled == context.enabled,
+              profile.archived == context.archived,
+              let index = snapshot.sources.firstIndex(where: { $0.id == context.sourceID && $0.airportID == context.airportID }),
+              snapshot.sources[index].credentialReference == context.credentialReference,
+              // Local edits already go through the model's request lifecycle.
+              // External changes must match the captured read context, even if
+              // another operation synchronized them before this response arrived.
+              (externalReadGeneration(for: context.airportID) == context.externalReadGeneration ||
+               snapshot.sources[index].effectiveReadContextRevision == context.readRevision) else { return nil }
+        var next = snapshot
+        var source = next.sources[index]
+        switch outcome {
+        case .success(let reading):
+            if let last = source.ledger.samples.last {
+                source.lastContinuity = reading.upload < last.subscription.upload || reading.download < last.subscription.download ? .counterChanged :
+                    reading.total != last.subscription.total ? .quotaChanged :
+                    source.resetRule.crosses(last.date, date) ? .resetBoundary : .continued
+            } else { source.lastContinuity = .baseline }
+            try source.ledger.append(reading, at: date)
+            source.needsVerification = false
+            source.syncAttempts.insert(SyncAttempt(date: date, subscription: reading, message: nil), at: 0)
+            source.readContextRevision = UUID()
+        case .failure(let message):
+            source.syncAttempts.insert(SyncAttempt(date: date, subscription: nil, message: message), at: 0)
+            source.readContextRevision = source.effectiveReadContextRevision
+        }
+        source.revision = UUID()
+        next.sources[index] = source
+        try commitLocked(next)
+        preserveRequest = context.airportID
+        return snapshot.sources[index]
     }
 
     /// Explicit recovery only. Preserve damaged bytes and never silently turn an
@@ -272,6 +397,9 @@ final class NativeRepository {
             source.syncAttempts = [SyncAttempt(date: initialReading.readAt, subscription: initialReading.subscription, message: nil)]
             source.needsVerification = false; source.lastContinuity = .baseline
         }
+        if let record {
+            source.readContextRevision = try Self.sameReadContext(record, source) ? record.effectiveReadContextRevision : UUID()
+        } else { source.readContextRevision = UUID() }
         source.revision = UUID()
         saved.name = name; saved.plan = plan
         if let index = next.catalog.profiles.firstIndex(where: { $0.id == saved.id }) { next.catalog.profiles[index] = saved }
@@ -287,7 +415,9 @@ final class NativeRepository {
         guard let active = self.source(for: source.airportID), active.id == source.id,
               active.credentialReference == source.credentialReference, active.revision == source.revision,
               let index = snapshot.sources.firstIndex(where: { $0.id == source.id }) else { throw TrafficError.storage }
-        var next = snapshot; next.sources[index] = source; next.sources[index].revision = UUID(); try commit(next)
+        var next = snapshot; next.sources[index] = source
+        next.sources[index].readContextRevision = try Self.sameReadContext(active, source) ? active.effectiveReadContextRevision : UUID()
+        next.sources[index].revision = UUID(); try commit(next)
     }
 
     func updateCatalog(_ catalog: AirportCatalog) throws {
@@ -301,6 +431,7 @@ final class NativeRepository {
             if profile.archived && !old.archived {
                 next.sources[index].gaps.append(MonitoringGap(removedAt: services.now(), lastSampleID: next.sources[index].ledger.samples.last?.id))
             } else if old.archived && !profile.archived, let gap = next.sources[index].gaps.indices.last { next.sources[index].gaps[gap].restoredAt = services.now() }
+            next.sources[index].readContextRevision = UUID()
             next.sources[index].revision = UUID()
         }
         try commit(next)
@@ -320,6 +451,7 @@ final class NativeRepository {
         guard let index = snapshot.sources.firstIndex(where: { $0.id == sourceID }),
               snapshot.sources[index].reminderDelivery?.id == deliveryID else { throw TrafficError.storage }
         var next = snapshot
+        next.sources[index].readContextRevision = snapshot.sources[index].effectiveReadContextRevision
         next.sources[index].reminderState = state
         next.sources[index].reminderDelivery = delivery
         if let unconfirmedDeliveries { next.sources[index].reminderUnconfirmedDeliveries = unconfirmedDeliveries }
