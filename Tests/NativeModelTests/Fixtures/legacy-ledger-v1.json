@@ -1,0 +1,1 @@
+{"version":1,"lowBalanceNotified":true,"samples":[{"id":"10000000-0000-0000-0000-000000000001","date":800000000,"subscription":{"upload":100,"download":200,"total":10000,"expiry":900000000},"reset":false},{"id":"10000000-0000-0000-0000-000000000002","date":800000300,"subscription":{"upload":120,"download":230,"total":10000,"expiry":900000000},"reset":false}]}

@@ -1,0 +1,11 @@
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.DS_Store
+dist/
+.playwright-cli/
+.serena/cache/
+.scratch/native-magpie-build/
+.scratch/**/*.app/
