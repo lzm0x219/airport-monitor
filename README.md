@@ -39,7 +39,7 @@ Airport Monitor 将多个机场的套餐信息集中在菜单栏和主窗口，�
 
 ## 快速开始
 
-**1 · 获取并打开。** 需要 macOS 14 或更新版本。如有可用的发布版本，可从 [GitHub Releases](https://github.com/lzm0x219/airport-monitor/releases) 下载；也可使用 Xcode 26 或更新版本从源码构建：
+**1 · 获取并打开。** 需要 macOS 14 或更新版本。如有可用的发布版本，可从 [GitHub Releases](https://github.com/lzm0x219/airport-monitor/releases) 下载，具体步骤见[安装与更新](docs/USAGE.md#从发布版本安装或更新)；也可使用 Xcode 26 或更新版本从源码构建：
 
 ```sh
 git clone https://github.com/lzm0x219/airport-monitor.git

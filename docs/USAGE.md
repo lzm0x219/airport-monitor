@@ -1,6 +1,16 @@
 # Airport Monitor 使用与数据说明
 
-本文说明日常操作、数据口径和故障恢复。[返回项目首页](../README.md)。当前源码版本为 1.0.0（build 1）。为兼容旧数据，应用沿用原内部 Bundle Identifier 和存储目录，正常升级无需重新输入订阅。
+本文说明安装、日常操作、数据口径和故障恢复。[返回项目首页](../README.md)。当前源码版本为 1.0.0（build 1）。应用沿用原内部 Bundle Identifier 和存储目录。
+
+## 从发布版本安装或更新
+
+1. 从 [GitHub Releases](https://github.com/lzm0x219/airport-monitor/releases) 下载 ZIP 并解压。
+2. 如果已有 Airport Monitor，先退出正在运行的应用。在访达中将下载版复制到「应用程序」文件夹；更新时请复制到旧版所在文件夹，并在提示时选择「替换」。关闭主窗口不会退出应用。
+3. 打开应用。当前发布包未使用 Apple Developer ID 签名，也未经过 Apple 公证，macOS 可能提示无法验证。如果已确认下载来源可信且文件未被篡改，仍选择打开，可在「系统设置 → 隐私与安全性」中选择「仍要打开」，再按系统提示完成验证和确认。详见 [Apple 的说明](https://support.apple.com/zh-cn/102445)。
+
+如需核对下载，将发布附件中的 ZIP 和 `SHA256SUMS.txt` 放在同一目录，在该目录执行 `shasum -a 256 -c SHA256SUMS.txt`。
+
+在一台 Apple Silicon Mac 上，从本地构建的 1.0.0 覆盖为下载版后，原有数据和设置保持一致，订阅仍显示已保存。不同版本间的升级、无数据的全新安装、真实联网刷新、登录启动、重启后体验及 Intel 实机尚未验证；更新后钥匙串可能要求重新授权。具体范围见[验证记录](VALIDATION.md)。
 
 ## 运行
 
