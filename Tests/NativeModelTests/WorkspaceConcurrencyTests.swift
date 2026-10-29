@@ -13,6 +13,7 @@ struct WorkspaceConcurrencyTests {
         var now = Date(timeIntervalSince1970: 1_792_497_600 + 30 * 86400)
         var reads = 0
         var sends = 0
+        var readStoreRetries = 0
         var hosts: [String] = []
         var delayed = false
         var first: AirportWorkspace!
@@ -40,6 +41,11 @@ struct WorkspaceConcurrencyTests {
             services.requestNotificationAuthorization = { false }
             services.reminderServices = ReminderServices(authorizationStatus: { .denied },
                 send: { _, _, _ in self.sends += 1 }, queryAcceptance: { _ in .unknown })
+            let waitForReadStoreRetry = services.waitForReadStoreRetry
+            services.waitForReadStoreRetry = { [weak self] in
+                self?.readStoreRetries += 1
+                try await waitForReadStoreRetry()
+            }
             return AirportWorkspace(defaults: original.defaults, historyDirectory: original.root,
                                     services: services, startAutomatically: false)
         }
@@ -308,7 +314,8 @@ struct WorkspaceConcurrencyTests {
         let request = Task { await f.secondModel.refresh() }
         try await f.fetches.waitFor(1)
         let lockPath = try #require(f.first.repository).directory.appendingPathComponent("store.lock").path
-        let holder = Process(), ready = Pipe()
+        // Keep the lock until the completed read has entered the retry path.
+        let holder = Process(), ready = Pipe(), release = Pipe()
         holder.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         holder.arguments = ["swift", "-e", """
             import Darwin
@@ -316,17 +323,30 @@ struct WorkspaceConcurrencyTests {
             guard fd >= 0, flock(fd, LOCK_EX | LOCK_NB) == 0 else { _exit(2) }
             var marker: UInt8 = 1
             _ = write(STDOUT_FILENO, &marker, 1)
-            usleep(700_000)
+            var command: UInt8 = 0
+            guard read(STDIN_FILENO, &command, 1) == 1, command == 1 else { _exit(3) }
             flock(fd, LOCK_UN); close(fd)
             """, lockPath]
         holder.standardOutput = ready
+        holder.standardInput = release
         holder.standardError = FileHandle.nullDevice
         try holder.run()
-        defer { if holder.isRunning { holder.terminate(); holder.waitUntilExit() } }
+        defer {
+            try? release.fileHandleForWriting.close()
+            if holder.isRunning { holder.terminate(); holder.waitUntilExit() }
+        }
         try #require(ready.fileHandleForReading.read(upToCount: 1) == Data([1]))
         try f.fetches.succeed(0)
-        try await Task.sleep(for: .milliseconds(150))
-        #expect(f.secondModel.busy && holder.isRunning)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while f.readStoreRetries == 0 && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(f.readStoreRetries > 0, "Completed read did not encounter the held store lock")
+        try #require(holder.isRunning, "Lock holder exited before the release signal")
+        #expect(f.secondModel.busy)
+        #expect(f.reads == 1 && f.secondModel.ledger.samples.count == count)
+        try release.fileHandleForWriting.write(contentsOf: Data([1]))
+        try release.fileHandleForWriting.close()
         await request.value
         holder.waitUntilExit()
         #expect(holder.terminationStatus == 0 && f.reads == 1 && f.secondModel.error == nil)

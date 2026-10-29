@@ -14,9 +14,26 @@ import AppKit
         let controller = StatusController(workspace: workspace, openMain: {}, openSettings: {})
         let item = Mirror(reflecting: controller).children.first { $0.label == "item" }!.value as! NSStatusItem
         let button = item.button!
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        let location = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
         func click() {
+            // AppKit can initially expose a visible status-item window with
+            // zero height. Also recalculate the point after display changes.
+            let deadline = ProcessInfo.processInfo.systemUptime + 3
+            var readyLocation: NSPoint?
+            while readyLocation == nil && ProcessInfo.processInfo.systemUptime < deadline {
+                if let window = button.window, window.isVisible,
+                   button.bounds.width > 0, button.bounds.height > 0 {
+                    let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+                    if NSRect(origin: .zero, size: window.frame.size).contains(point) {
+                        readyLocation = point
+                        break
+                    }
+                }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            }
+            guard let location = readyLocation else {
+                print("FAIL: status button window did not become ready for a click.")
+                exit(1)
+            }
             let timestamp = ProcessInfo.processInfo.systemUptime
             func event(_ type: NSEvent.EventType) -> NSEvent {
                 NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: timestamp,

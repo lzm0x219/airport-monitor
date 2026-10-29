@@ -30,6 +30,7 @@ struct MonitorServices {
     }
     var now: () -> Date = Date.init
     var reminderServices: ReminderServices?
+    var waitForReadStoreRetry: () async throws -> Void = { try await Task.sleep(for: .milliseconds(100)) }
     // Injected test transports remain isolated. Production uses the same durable
     // gate as SubscriptionClient, seeded from pre-upgrade observations.
     var nextSubscriptionRequest: (URL, Date?) throws -> Date? = { _, _ in nil }
@@ -387,7 +388,7 @@ final class MonitorModel: ObservableObject {
                 catch RepositoryConflict.busy {
                     // Keep the completed result while another process publishes;
                     // cancellation or a context change still stops the retry.
-                    try await Task.sleep(for: .milliseconds(100))
+                    try await services.waitForReadStoreRetry()
                     guard eligible(), !Task.isCancelled, !readLifecycle.taskIsCancelled(token) else { throw CancellationError() }
                 }
             }

@@ -9,14 +9,16 @@ let package = Package(
         .target(name: "TrafficCore", path: "Sources/Core"),
         .target(name: "NativeModels", dependencies: ["TrafficCore"], path: "Sources/App",
                 exclude: [
-                    "Application/AirportMonitorApp.swift",
+                    "Application/AirportMonitorApp.swift", "Application/ApplicationController.swift",
                     "MenuBar/StatusLogoFeedback.swift", "MenuBar/OwlLogoGeometry.swift", "MenuBar/OwlTouchResponse.swift",
-                    "MenuBar/PanelPlacement.swift", "MenuBar/QuotaPanel.swift",
+                    "MenuBar/PanelPlacement.swift", "MenuBar/QuotaPanel.swift", "MenuBar/StatusController.swift",
                     "Presentation/NativeDesign.swift", "Presentation/WorkspaceControls.swift",
                     "Review/NavigationBenchmark.swift", "Review/WorkspaceReviewSupport.swift", "Review/WorkspaceScaleFixture.swift",
+                    "Review/MenuLayoutSnapshots.swift",
                     "Settings/SettingsView.swift",
                     "Workspace/WorkspaceView.swift", "Workspace/AirportEditor.swift", "Workspace/AirportUsageCharts.swift",
-                    "Workspace/InlineAirportConnection.swift", "Assets.xcassets"
+                    "Workspace/InlineAirportConnection.swift", "Workspace/WorkspaceToolbar.swift", "Workspace/AirportCard.swift",
+                    "Workspace/SourceHistoryView.swift", "Assets.xcassets"
                 ],
                 sources: [
                     "Application/SingleInstanceCoordinator.swift",
