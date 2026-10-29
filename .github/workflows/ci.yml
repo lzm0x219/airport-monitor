@@ -39,7 +39,10 @@ jobs:
             "$RUNNER_TEMP/airport-monitor-release/release-notes.md"
 
       - name: Run tests
-        run: swift test --scratch-path "$RUNNER_TEMP/airport-monitor-tests"
+        run: swift test --scratch-path "$RUNNER_TEMP/airport-monitor-tests" --skip RequestGateConcurrencyTests
+
+      - name: Run request gate tests
+        run: swift test --scratch-path "$RUNNER_TEMP/airport-monitor-tests" --skip-build --no-parallel --filter RequestGateConcurrencyTests
 
       - name: Build universal app
         run: |

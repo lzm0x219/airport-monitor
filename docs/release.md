@@ -1,6 +1,6 @@
 # 构建与发布
 
-GitHub Actions 在推送 `main`、提交 Pull Request 和手动运行时执行 Swift 测试、构建 Apple Silicon 与 Intel 通用应用，并保存 ZIP 与 SHA-256 校验文件供检查。推送版本标签时，通过同样的检查后还会创建 GitHub Release 草稿。手动运行只构建，不创建发布。
+GitHub Actions 在推送 `main`、提交 Pull Request 和手动运行时执行 Swift 测试、构建 Apple Silicon 与 Intel 通用应用，并保存 ZIP 与 SHA-256 校验文件供检查。限频并发测试单独顺序运行，避免其他测试占用主线程触发其保护计时器；测试内部的并发场景仍会执行。推送版本标签时，通过同样的检查后还会创建 GitHub Release 草稿。手动运行只构建，不创建发布。
 
 ## 创建发布草稿
 
