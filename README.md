@@ -39,7 +39,7 @@ Airport Monitor 将多个机场的套餐信息集中在菜单栏和主窗口，�
 
 ## 快速开始
 
-**1 · 构建并打开。** 当前从源码构建使用。准备 macOS 14 或更新版本，建议使用 Xcode 26 或更新版本：
+**1 · 获取并打开。** 需要 macOS 14 或更新版本。如有可用的发布版本，可从 [GitHub Releases](https://github.com/lzm0x219/airport-monitor/releases) 下载；也可使用 Xcode 26 或更新版本从源码构建：
 
 ```sh
 git clone https://github.com/lzm0x219/airport-monitor.git
@@ -49,7 +49,7 @@ open AirportMonitor.xcodeproj
 
 在 Xcode 中选择 **AirportMonitor → My Mac**，按 **⌘R**。
 
-<sub>工程默认使用本机 ad-hoc 签名，未做 Developer ID 签名和 Apple 公证。终端构建、产物位置和测试方式见[构建说明](docs/USAGE.md#用-xcode-打开编译)。</sub>
+<sub>默认构建和 CI 产物使用 ad-hoc 签名，未做 Developer ID 签名和 Apple 公证。终端构建、产物位置和测试方式见[构建说明](docs/USAGE.md#用-xcode-打开编译)。</sub>
 
 **2 · 添加机场。** 点击主窗口右上角的「＋」，粘贴订阅链接并点击「读取」。核对预览，填写机场名称并确认添加。添加后可在机场配置中设置重置规则和提醒。
 
@@ -115,6 +115,7 @@ open AirportMonitor.xcodeproj
 | [产品范围](PRODUCT.md) | 产品用途、能力与约束 |
 | [设计规范](DESIGN.md) | 界面、交互与原生实现约定 |
 | [验证记录](docs/VALIDATION.md) | 构建、测试和实机验证的范围与限制 |
+| [构建与发布](docs/release.md) | 自动构建、发布草稿与签名限制 |
 | [目录与文件规范](docs/project-structure.md) | 源码、资源、文档和临时文件的归属 |
 
 ## 许可证

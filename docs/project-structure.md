@@ -11,6 +11,7 @@
 | `PRODUCT.md`、`DESIGN.md` | 分别维护产品范围和界面规范。 |
 | `GLOSSARY.md` | 维护领域术语。 |
 | `docs/VALIDATION.md` | 维护带验证范围的结果。 |
+| `docs/release.md`、`docs/releases/`、`.github/workflows/`、`tools/release/` | 分别维护发布规范、各版本面向用户的说明、GitHub Actions 流程及发布工具。 |
 | `AGENTS.md`、`docs/agents/` | 协作入口及按需读取的任务规则。 |
 | `AirportMonitor.xcodeproj/`、`Package.swift`、`AirportMonitor.entitlements` | 原生应用、Swift Package 与权限配置。 |
 | `Sources/Core/` | 订阅读取、采样、统计、预测和提醒规则等核心逻辑；不依赖原生界面。 |
