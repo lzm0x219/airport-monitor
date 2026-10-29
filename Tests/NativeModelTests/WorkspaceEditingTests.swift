@@ -212,7 +212,7 @@ struct WorkspaceEditingTests {
         let gate = SubscriptionRequestGate(storeURL: f.original.root.appendingPathComponent("test-request-gate.json"))
         var services = f.original.vault.services
         services.now = { f.now }
-        services.nextSubscriptionRequest = { try gate.nextAllowedDate(for: $0, observedAttempt: $1, now: f.now) }
+        services.nextSubscriptionRequest = { try await gate.nextAllowedDateAsync(for: $0, observedAttempt: $1, now: f.now) }
         services.fetch = { url in
             try gate.reserve(url, now: f.now)
             f.reads += 1

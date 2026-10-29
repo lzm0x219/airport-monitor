@@ -29,7 +29,7 @@ struct WorkspaceConcurrencyTests {
         func open() -> AirportWorkspace {
             var services = original.vault.services
             services.now = { self.now }
-            services.nextSubscriptionRequest = { try self.gate.nextAllowedDate(for: $0, observedAttempt: $1, now: self.now) }
+            services.nextSubscriptionRequest = { try await self.gate.nextAllowedDateAsync(for: $0, observedAttempt: $1, now: self.now) }
             services.fetch = { url in
                 try self.gate.reserve(url, now: self.now)
                 self.reads += 1

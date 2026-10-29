@@ -44,7 +44,7 @@ enum WorkspaceReviewSupport {
         if CommandLine.arguments.contains("--request-limit-review") || slowSync || samplingSnapshot {
             let gate = SubscriptionRequestGate(storeURL: root.appendingPathComponent("request-review.json"))
             let transport = services.fetch
-            services.nextSubscriptionRequest = { try gate.nextAllowedDate(for: $0, observedAttempt: $1) }
+            services.nextSubscriptionRequest = { try await gate.nextAllowedDateAsync(for: $0, observedAttempt: $1) }
             services.fetch = { url in
                 try gate.reserve(url)
                 return try await transport(url)

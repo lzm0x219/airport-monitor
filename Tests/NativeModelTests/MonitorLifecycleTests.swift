@@ -56,7 +56,7 @@ struct MonitorLifecycleTests {
         var services = f.vault.services
         services.now = { now }
         services.nextSubscriptionRequest = { url, attempt in
-            try syncGate.nextAllowedDate(for: url, observedAttempt: attempt, now: now)
+            try await syncGate.nextAllowedDateAsync(for: url, observedAttempt: attempt, now: now)
         }
         services.fetch = { url in
             try syncGate.reserve(url, now: now)

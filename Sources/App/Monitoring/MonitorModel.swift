@@ -33,15 +33,38 @@ struct MonitorServices {
     var waitForReadStoreRetry: () async throws -> Void = { try await Task.sleep(for: .milliseconds(100)) }
     // Injected test transports remain isolated. Production uses the same durable
     // gate as SubscriptionClient, seeded from pre-upgrade observations.
-    var nextSubscriptionRequest: (URL, Date?) throws -> Date? = { _, _ in nil }
+    var nextSubscriptionRequest: @MainActor (URL, Date?) async throws -> Date? = { _, _ in nil }
     static func live() -> MonitorServices {
         var services = MonitorServices()
-        services.nextSubscriptionRequest = { try SubscriptionRequestGate.shared.nextAllowedDate(for: $0, observedAttempt: $1) }
+        services.nextSubscriptionRequest = { try await SubscriptionRequestGate.shared.nextAllowedDateAsync(for: $0, observedAttempt: $1) }
         return services
     }
 }
 
 enum SyncPurpose { case automatic, manual }
+
+/// Records startup observations before any workspace request can use the gate.
+@MainActor
+final class StartupRequestAttempts {
+    private var attempts: [String: Date] = [:]
+    private var ready = false
+
+    func include(_ attempt: Date?, for identity: String) {
+        guard let attempt, attempt.timeIntervalSince1970.isFinite else { return }
+        if attempts[identity].map({ attempt > $0 }) ?? true { attempts[identity] = attempt }
+    }
+
+    func latest(for identity: String, including attempt: Date? = nil) -> Date? {
+        [attempt, attempts[identity]].compactMap { $0 }.max()
+    }
+
+    func finishRegistration() { ready = true }
+
+    func waitUntilReady() async throws {
+        while !ready { try await Task.sleep(for: .milliseconds(10)) }
+        try Task.checkCancellation()
+    }
+}
 
 @MainActor
 final class MonitorModel: ObservableObject {
@@ -90,11 +113,15 @@ final class MonitorModel: ObservableObject {
     private let historyDirectory: URL?
     private let repository: NativeRepository?
     private let airportID: UUID?
+    private let initialRequestAttempts: StartupRequestAttempts?
     @Published private(set) var linkVerificationPending = false
     @Published private(set) var syncPending = false
     private(set) var archived = false
     private var readLifecycle = SubscriptionReadLifecycle()
     private var preparingRead: UUID?
+    private var needsInitialGateCheck = true
+    private var initialGateCheck: (id: UUID, task: Task<Void, Never>)?
+    private var activeGateCheck: (id: UUID, task: Task<Date?, Error>)?
     private var monitoringStarted = false
     private var syncLogBlocked = false
     private var dayRecords: [DateInterval: DailyUsage] = [:]
@@ -229,10 +256,11 @@ final class MonitorModel: ObservableObject {
     init(profileID: String? = nil, credentialAccount: String = "active-url", defaults: UserDefaults = .standard,
          demoLedger: Ledger? = nil, enabled: Bool = true, services: MonitorServices? = nil,
          historyDirectory: URL? = nil, startAutomatically: Bool = true,
-         repository: NativeRepository? = nil, airportID: UUID? = nil) {
+         repository: NativeRepository? = nil, airportID: UUID? = nil,
+         initialRequestAttempts: StartupRequestAttempts? = nil) {
         self.defaults = defaults; self.credentialAccount = credentialAccount; self.isDemo = demoLedger != nil
         self.services = services ?? MonitorServices.live(); self.historyDirectory = historyDirectory
-        self.repository = repository; self.airportID = airportID
+        self.repository = repository; self.airportID = airportID; self.initialRequestAttempts = initialRequestAttempts
         self.enabled = enabled
         trafficUnit = TrafficUnit(rawValue: defaults.string(forKey: "trafficUnit") ?? "") ?? .gb
         menuDisplay = MenuDisplay(rawValue: defaults.string(forKey: "menuDisplay") ?? "") ?? .iconAndBalance
@@ -246,6 +274,7 @@ final class MonitorModel: ObservableObject {
         thresholdGB = threshold.isFinite && threshold > 0 ? threshold : 10
         loadResetRule()
         if let demoLedger {
+            needsInitialGateCheck = false
             ledger = demoLedger; hasURL = true
             var rule = ResetRule(); rule.kind = .monthly
             rule.day = calendar.component(.day, from: calendar.date(byAdding: .day, value: 7, to: Date())!)
@@ -260,16 +289,7 @@ final class MonitorModel: ObservableObject {
             do { syncAttempts = try SyncAttemptStore(url: historyStore.url.appendingPathExtension("sync")).load() }
             catch { syncLogBlocked = true; settingsMessage = "同步记录无法读取，原文件已保留。" }
         }
-        do {
-            let reference = airportID.flatMap { repository?.source(for: $0)?.credentialReference } ?? credentialAccount
-            if let secret = try self.services.readCredential(reference) {
-                let attempt = (syncAttempts.map(\.date) + [latest?.date].compactMap { $0 }).max()
-                requestAvailableAt = try self.services.nextSubscriptionRequest(Subscription.validatedURL(secret), attempt)
-            }
-        } catch {
-            storageBlocked = true
-            self.error = "无法确认订阅请求间隔，已停止请求以避免过于频繁。请检查本地存储。"
-        }
+        startInitialGateCheck()
         guard startAutomatically else { return }
         startMonitoring()
         let initialGeneration = readLifecycle.generation
@@ -308,7 +328,80 @@ final class MonitorModel: ObservableObject {
     func invalidateRequests() {
         readLifecycle.invalidate()
         preparingRead = nil
+        initialGateCheck?.task.cancel(); initialGateCheck = nil
+        activeGateCheck?.task.cancel(); activeGateCheck = nil
         busy = false
+    }
+
+    private func startInitialGateCheck() {
+        guard needsInitialGateCheck, initialGateCheck == nil else { return }
+        do {
+            let reference = airportID.flatMap { repository?.source(for: $0)?.credentialReference } ?? credentialAccount
+            guard let secret = try services.readCredential(reference) else { needsInitialGateCheck = false; return }
+            let url = try Subscription.validatedURL(secret)
+            let identity = try SubscriptionRequestGate.identity(for: url)
+            let attempt = (syncAttempts.map(\.date) + [latest?.date].compactMap { $0 }).max()
+            let initialAttempts = initialRequestAttempts
+            initialAttempts?.include(attempt, for: identity)
+            let check = services.nextSubscriptionRequest
+            let generation = readLifecycle.generation, id = UUID()
+            let task = Task { [weak self] in
+                do {
+                    try await initialAttempts?.waitUntilReady()
+                    let observed = initialAttempts?.latest(for: identity, including: attempt) ?? attempt
+                    let available = try await check(url, observed)
+                    guard !Task.isCancelled, let self, self.initialGateCheck?.id == id,
+                          self.readLifecycle.generation == generation else { return }
+                    self.requestAvailableAt = available
+                    self.needsInitialGateCheck = false; self.initialGateCheck = nil
+                } catch is CancellationError {
+                    guard let self, self.initialGateCheck?.id == id else { return }
+                    self.initialGateCheck = nil
+                } catch {
+                    guard !Task.isCancelled, let self, self.initialGateCheck?.id == id,
+                          self.readLifecycle.generation == generation else { return }
+                    self.storageBlocked = true
+                    self.error = "无法确认订阅请求间隔，已停止请求以避免过于频繁。请检查本地存储。"
+                    self.needsInitialGateCheck = false; self.initialGateCheck = nil
+                }
+            }
+            initialGateCheck = (id, task)
+        } catch {
+            needsInitialGateCheck = false
+            storageBlocked = true
+            self.error = "无法确认订阅请求间隔，已停止请求以避免过于频繁。请检查本地存储。"
+        }
+    }
+
+    private func ensureInitialGateChecked(generation: UUID) async -> Bool {
+        while needsInitialGateCheck && !Task.isCancelled && readLifecycle.generation == generation {
+            startInitialGateCheck()
+            guard let check = initialGateCheck else { break }
+            await withTaskCancellationHandler {
+                await check.task.value
+            } onCancel: {
+                check.task.cancel()
+            }
+            if check.task.isCancelled {
+                if initialGateCheck?.id == check.id { initialGateCheck = nil }
+            } else if needsInitialGateCheck {
+                return false
+            }
+        }
+        return !Task.isCancelled && readLifecycle.generation == generation && !needsInitialGateCheck && !storageBlocked
+    }
+
+    private func checkRequestAvailability(_ url: URL, observedAttempt: Date?) async throws -> Date? {
+        let id = UUID()
+        let check = services.nextSubscriptionRequest
+        let task = Task { try await check(url, observedAttempt) }
+        activeGateCheck = (id, task)
+        defer { if activeGateCheck?.id == id { activeGateCheck = nil } }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     func setLifecycle(enabled: Bool, archived: Bool, refreshOnResume: Bool = true) {
@@ -347,6 +440,8 @@ final class MonitorModel: ObservableObject {
         preparingRead = preparation
         defer { if preparingRead == preparation { preparingRead = nil } }
         let preparingGeneration = readLifecycle.generation
+        guard await ensureInitialGateChecked(generation: preparingGeneration), preparingRead == preparation,
+              readLifecycle.generation == preparingGeneration else { return }
         if let repository {
             while true {
                 do { try repository.synchronize(); break }
@@ -401,8 +496,12 @@ final class MonitorModel: ObservableObject {
             guard let secret = try services.readCredential(credential) else { hasURL = false; return }
             hasURL = true
             let url = try Subscription.validatedURL(secret)
+            let identity = try SubscriptionRequestGate.identity(for: url)
             let lastAttempt = (syncAttempts.map(\.date) + [latest?.date].compactMap { $0 }).max()
-            requestAvailableAt = try services.nextSubscriptionRequest(url, lastAttempt)
+            let observed = initialRequestAttempts?.latest(for: identity, including: lastAttempt) ?? lastAttempt
+            let available = try await checkRequestAvailability(url, observedAttempt: observed)
+            guard eligible(), !Task.isCancelled else { return }
+            requestAvailableAt = available
             if let date = requestAvailableAt, date > services.now() { throw SubscriptionCooldown(until: date) }
             let request = Task { try await services.fetch(url) }
             guard readLifecycle.attach(request, to: token) else { return }
@@ -582,8 +681,9 @@ final class MonitorModel: ObservableObject {
     }
 
     func evaluateReminders() async {
-        guard !isDemo, !storageBlocked, let repository, let airportID else { return }
+        guard !isDemo, let repository, let airportID else { return }
         let generation = readLifecycle.generation
+        guard await ensureInitialGateChecked(generation: generation) else { return }
         while true {
             do { try repository.synchronize(); break }
             catch RepositoryConflict.busy {
@@ -764,4 +864,6 @@ final class MonitorModel: ObservableObject {
     }
 
     func stop() { monitoringStarted = false; invalidateRequests(); timer?.cancel(); timer = nil; reminderRetryTask?.cancel(); reminderRetryTask = nil; nextRefresh = nil; if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver); self.wakeObserver = nil } }
+
+    deinit { initialGateCheck?.task.cancel(); activeGateCheck?.task.cancel() }
 }

@@ -119,6 +119,7 @@ final class AirportWorkspace: ObservableObject {
     private var confirmingPreviews = Set<ObjectIdentifier>()
     private var monitors: [UUID: MonitorModel] = [:]
     private var observations: [UUID: AnyCancellable] = [:]
+    private let initialRequestAttempts = StartupRequestAttempts()
     var activeProfiles: [AirportProfile] { profiles.filter { !$0.archived } }
     var menuProfile: AirportProfile? { profiles.first { $0.id == menuAirport && !$0.archived } }
     var menuModel: MonitorModel? { menuProfile.flatMap { monitors[$0.id] } }
@@ -153,6 +154,7 @@ final class AirportWorkspace: ObservableObject {
             catalogBlocked = true
             message = "配置或历史无法安全迁移／恢复，原文件与配置已保留；请检查备份及存储权限后重开。"
         }
+        initialRequestAttempts.finishRegistration()
         browsingAirport = activeProfiles.first?.id
     }
 
@@ -193,7 +195,8 @@ final class AirportWorkspace: ObservableObject {
     private func makeMonitor(_ profile: AirportProfile, automatically: Bool) -> MonitorModel {
         let monitor = MonitorModel(profileID: profile.historyID, credentialAccount: profile.credentialAccount, defaults: defaults,
                      enabled: profile.enabled && !profile.archived, services: services, historyDirectory: historyDirectory,
-                     startAutomatically: automatically, repository: repository, airportID: profile.id)
+                     startAutomatically: automatically, repository: repository, airportID: profile.id,
+                     initialRequestAttempts: initialRequestAttempts)
         monitor.setLifecycle(enabled: profile.enabled, archived: profile.archived, refreshOnResume: false)
         return monitor
     }
@@ -220,7 +223,17 @@ final class AirportWorkspace: ObservableObject {
                                  expiry: Date().addingTimeInterval(30 * 86400))
             })
         }
-        return SubscriptionPreview(fetch: services.fetch, now: services.now)
+        let attempts = initialRequestAttempts, fetch = services.fetch
+        let check = services.nextSubscriptionRequest, now = services.now
+        return SubscriptionPreview(fetch: { url in
+            try await attempts.waitUntilReady()
+            if let attempt = attempts.latest(for: try SubscriptionRequestGate.identity(for: url)) {
+                let available = try await check(url, attempt)
+                try Task.checkCancellation()
+                if let available, available > now() { throw SubscriptionCooldown(until: available) }
+            }
+            return try await fetch(url)
+        }, now: now)
     }
 
     func confirmPreview(_ preview: SubscriptionPreview, name: String, plan: String = "") async -> UUID? {

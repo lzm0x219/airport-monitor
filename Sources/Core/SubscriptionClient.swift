@@ -25,13 +25,46 @@ public struct SubscriptionCooldown: Error, LocalizedError {
 /// Persist BEFORE transport starts. Failed/cancelled requests also consume the
 /// interval. A separate lock file serializes independent app processes.
 public final class SubscriptionRequestGate: @unchecked Sendable {
+    private enum LockContention: Error { case busy }
     public static let shared = SubscriptionRequestGate(storeURL: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("SurgeTrafficMonitor/subscription-requests-v1.json"))
     private let storeURL: URL
     public init(storeURL: URL) { self.storeURL = storeURL }
 
+    /// The same normalized, hashed identity used by the persistent gate.
+    public static func identity(for url: URL) throws -> String {
+        let validated = try Subscription.validatedURL(url.absoluteString)
+        var components = URLComponents(url: validated, resolvingAgainstBaseURL: false)!
+        components.fragment = nil; components.scheme = components.scheme?.lowercased(); components.host = components.host?.lowercased()
+        if components.port == 443 { components.port = nil }
+        if components.percentEncodedPath.isEmpty { components.percentEncodedPath = "/" }
+        return SHA256.hash(data: Data(components.string!.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
     public func nextAllowedDate(for url: URL, observedAttempt: Date? = nil, now: Date = Date()) throws -> Date? {
         try access(url, observedAttempt: observedAttempt, now: now, reserve: false)
+    }
+
+    /// UI callers must not wait on file locks or disk access on the main actor.
+    public func nextAllowedDateAsync(for url: URL, observedAttempt: Date? = nil, now: Date = Date()) async throws -> Date? {
+        while true {
+            try Task.checkCancellation()
+            let worker = Task.detached(priority: .utility) {
+                try Task.checkCancellation()
+                return try self.access(url, observedAttempt: observedAttempt, now: now, reserve: false, nonblocking: true)
+            }
+            do {
+                let result = try await withTaskCancellationHandler {
+                    try await worker.value
+                } onCancel: {
+                    worker.cancel()
+                }
+                try Task.checkCancellation()
+                return result
+            } catch LockContention.busy {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+        }
     }
 
     public func reserve(_ url: URL, now: Date = Date()) throws {
@@ -40,22 +73,21 @@ public final class SubscriptionRequestGate: @unchecked Sendable {
         }
     }
 
-    private func access(_ url: URL, observedAttempt: Date?, now: Date, reserve: Bool) throws -> Date? {
+    private func access(_ url: URL, observedAttempt: Date?, now: Date, reserve: Bool, nonblocking: Bool = false) throws -> Date? {
         guard now.timeIntervalSince1970.isFinite else { throw TrafficError.clock }
-        let validated = try Subscription.validatedURL(url.absoluteString)
-        var components = URLComponents(url: validated, resolvingAgainstBaseURL: false)!
-        components.fragment = nil; components.scheme = components.scheme?.lowercased(); components.host = components.host?.lowercased()
-        if components.port == 443 { components.port = nil }
-        if components.percentEncodedPath.isEmpty { components.percentEncodedPath = "/" }
-        let key = SHA256.hash(data: Data(components.string!.utf8)).map { String(format: "%02x", $0) }.joined()
+        let key = try Self.identity(for: url)
         do {
             try FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
             let fd = open(storeURL.appendingPathExtension("lock").path, O_CREAT | O_RDWR, 0o600)
             guard fd >= 0 else { throw TrafficError.storage }
             defer { close(fd) }
-            guard flock(fd, LOCK_EX) == 0 else { throw TrafficError.storage }
+            guard flock(fd, LOCK_EX | (nonblocking ? LOCK_NB : 0)) == 0 else {
+                if nonblocking && (errno == EWOULDBLOCK || errno == EAGAIN) { throw LockContention.busy }
+                throw TrafficError.storage
+            }
             defer { flock(fd, LOCK_UN) }
+            if nonblocking { try Task.checkCancellation() }
             var records: [String: Date] = [:]
             if FileManager.default.fileExists(atPath: storeURL.path) {
                 records = try JSONDecoder().decode([String: Date].self, from: Data(contentsOf: storeURL))
@@ -70,11 +102,14 @@ public final class SubscriptionRequestGate: @unchecked Sendable {
             let blocked = until.flatMap { $0 > now ? $0 : nil }
             if reserve && blocked == nil { records[key] = now; changed = true }
             if changed {
+                if nonblocking { try Task.checkCancellation() }
                 try JSONEncoder().encode(records).write(to: storeURL, options: .atomic)
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: storeURL.path)
             }
             return blocked
-        } catch { throw TrafficError.storage }
+        } catch is LockContention { throw LockContention.busy }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw TrafficError.storage }
     }
 }
 

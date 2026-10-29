@@ -16,7 +16,7 @@ struct SyncStatusPresentationTests {
         var now = readAt.addingTimeInterval(36 * 3600)
         var services = f.vault.services; services.now = { now }
         let gate = SubscriptionRequestGate(storeURL: f.root.appendingPathComponent("test-request-gate.json"))
-        services.nextSubscriptionRequest = { try gate.nextAllowedDate(for: $0, observedAttempt: $1, now: now) }
+        services.nextSubscriptionRequest = { try await gate.nextAllowedDateAsync(for: $0, observedAttempt: $1, now: now) }
         services.fetch = { url in
             try gate.reserve(url, now: now)
             f.vault.fetches += 1
