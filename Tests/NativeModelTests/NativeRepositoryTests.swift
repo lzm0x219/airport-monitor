@@ -5,77 +5,8 @@ import TrafficCore
 
 @Suite @MainActor
 struct NativeRepositoryTests {
-    @MainActor final class Vault {
-        var credentials = ["legacy-a": "https://a.example/old-secret", "legacy-b": "https://b.example/old-secret"]
-        var failSave = false
-        var failDelete = false
-        var failFetch = false
-        var fetches = 0
-        var used: UInt64 = 260
-        var services: MonitorServices {
-            MonitorServices(readCredential: { self.credentials[$0] }, saveCredential: { value, key in
-                self.credentials[key] = value
-                if self.failSave { throw TrafficError.storage }
-            }, deleteCredential: { key in
-                if self.failDelete { throw TrafficError.storage }
-                self.credentials.removeValue(forKey: key)
-            }, fetch: { _ in
-                self.fetches += 1
-                if self.failFetch { throw TrafficError.network(-1009) }
-                return try Subscription(upload: 120, download: self.used, total: 10000, expiry: Date(timeIntervalSinceReferenceDate: 900000000))
-            }, notificationAuthorizationStatus: { .denied })
-        }
-    }
-    @MainActor final class Fixture {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("NativeMigration-\(UUID())")
-        let suite = "NativeMigration.\(UUID())"
-        let defaults: UserDefaults
-        let vault = Vault()
-        var catalog: AirportCatalog
-        let original: Data
-        let rule: ResetRule
-        init() throws {
-            defaults = UserDefaults(suiteName: suite)!
-            catalog = AirportCatalog(profiles: [
-                AirportProfile(id: UUID(uuidString: "20000000-0000-0000-0000-000000000001")!, historyID: "30000000-0000-0000-0000-000000000001", credentialAccount: "legacy-a", name: "主力", plan: "旧套餐", enabled: true, archived: false),
-                AirportProfile(id: UUID(uuidString: "20000000-0000-0000-0000-000000000002")!, historyID: "30000000-0000-0000-0000-000000000002", credentialAccount: "legacy-b", name: "已归档", plan: "备份", enabled: false, archived: true)
-            ], menuAirport: UUID(uuidString: "20000000-0000-0000-0000-000000000001"))
-            let fixture = try #require(Bundle.module.url(forResource: "legacy-ledger-v1", withExtension: "json", subdirectory: "Fixtures"))
-            original = try Data(contentsOf: fixture)
-            var r = ResetRule(); r.kind = .billing; r.day = 31; r.hour = 23; r.minute = 45; r.timeZoneID = "America/New_York"; r.anchor = Date(timeIntervalSinceReferenceDate: 799000000); rule = r
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            for profile in catalog.profiles {
-                try original.write(to: root.appendingPathComponent("\(profile.historyID).json"))
-                defaults.set(try JSONEncoder().encode(rule), forKey: "resetRule.\(profile.historyID)")
-                defaults.set(7.5, forKey: "thresholdGB.\(profile.credentialAccount)")
-            }
-            defaults.set(try JSONEncoder().encode(catalog), forKey: "airportCatalog.v1")
-            defaults.set("gib", forKey: "trafficUnit")
-            defaults.set("overview", forKey: "menuPanelLayout.v1")
-            defaults.set("dark", forKey: "appearanceMode.v1")
-            defaults.set(15, forKey: "intervalMinutes")
-        }
-        func open(_ hook: @escaping (RepositoryCheckpoint) throws -> Void = { _ in }) throws -> NativeRepository {
-            try NativeRepository(root: root, defaults: defaults, services: vault.services, checkpoint: hook)
-        }
-        func cleanup() { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
-        var first: AirportProfile { catalog.profiles[0] }
-        @discardableResult func change(_ store: NativeRepository, mode: SubscriptionChange = .sameSource, url: String = "https://new.example/private-token") throws -> AirportProfile {
-            try store.saveAirport(profile: first, name: "修改名称", plan: "新说明", subscription: url, reset: rule, threshold: 8, change: mode)
-        }
-        func assertOriginals() throws {
-            for profile in catalog.profiles {
-                #expect(try Data(contentsOf: root.appendingPathComponent("\(profile.historyID).json")) == original)
-            }
-            let originalCatalog = try JSONDecoder().decode(AirportCatalog.self, from: defaults.data(forKey: "airportCatalog.v1")!)
-            #expect(originalCatalog.profiles.map(\.id) == catalog.profiles.map(\.id))
-            #expect(originalCatalog.profiles.map(\.name) == catalog.profiles.map(\.name))
-            #expect(vault.credentials["legacy-a"] == "https://a.example/old-secret")
-        }
-    }
-
     @Test func migrationRetainsIDsSamplesRulesAndPreferences() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let beforeDefaults = f.defaults.dictionaryRepresentation()
         let store = try f.open(), source = try #require(store.source(for: f.first.id))
         #expect(store.snapshot.catalog.version == 2)
@@ -95,7 +26,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func sameSourceChangePreservesHistoryAndNotificationIdentity() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open(), before = try #require(store.source(for: f.first.id))
         let saved = try f.change(store)
         let after = try #require(store.source(for: saved.id))
@@ -111,7 +42,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func newSourceKeepsCompletePreviousSegmentAndStartsEmpty() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open(), saved = try f.change(store, mode: .newSource)
         let active = try #require(store.source(for: saved.id)), history = store.history(for: saved.id)
         #expect(saved.id == f.first.id && saved.historyID != f.first.historyID)
@@ -125,7 +56,7 @@ struct NativeRepositoryTests {
 
     @Test(arguments: [RepositoryCheckpoint.prepared, .credentialStaged, .beforePublish])
     func failedSaveDoesNotPublishPartialChanges(point: RepositoryCheckpoint) throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         var fail = true
         let store = try f.open { if fail && $0 == point { throw TrafficError.storage } }
         let before = try Data(contentsOf: store.stateURL)
@@ -140,7 +71,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func partiallyWrittenCredentialFailureRollsBack() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open(); f.vault.failSave = true
         #expect(throws: (any Error).self) { try f.change(store) }
         #expect(f.vault.credentials.count == 2)
@@ -151,7 +82,7 @@ struct NativeRepositoryTests {
 
     @Test(arguments: [RepositoryCheckpoint.prepared, .credentialStaged, .beforePublish, .published, .beforeCleanup])
     func restartRecoversEveryCommitBoundary(point: RepositoryCheckpoint) throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open { if $0 == point { throw RepositoryInterruption.simulatedCrash } }
         #expect(throws: RepositoryInterruption.self) { try f.change(store, mode: .newSource) }
         let reopened = try f.open(), committed = point == .published || point == .beforeCleanup
@@ -165,7 +96,7 @@ struct NativeRepositoryTests {
 
     @Test(arguments: [RepositoryCheckpoint.migrationPrepared, .migrationPublished])
     func migrationRestartIsIdempotent(point: RepositoryCheckpoint) throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         #expect(throws: RepositoryInterruption.self) { try f.open { if $0 == point { throw RepositoryInterruption.simulatedCrash } } }
         let store = try f.open(), reopened = try f.open()
         #expect(store.snapshot.revision == reopened.snapshot.revision)
@@ -174,7 +105,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func cleanupFailureAfterPublishIsSuccessNotRollback() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open { if $0 == .beforeCleanup { throw TrafficError.storage } }
         _ = try f.change(store)
         #expect(store.recoveryPending)
@@ -184,7 +115,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func failedCleanupBlocksUntilRecoveryCanComplete() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open(); f.vault.failSave = true; f.vault.failDelete = true
         #expect(throws: (any Error).self) { try f.change(store) }
         #expect(store.recoveryPending)
@@ -196,7 +127,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func orphanHistoryIsReportedWithoutGuessingOwner() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let name = "40000000-0000-0000-0000-000000000001.json"
         try f.original.write(to: f.root.appendingPathComponent(name))
         let store = try f.open()
@@ -208,7 +139,7 @@ struct NativeRepositoryTests {
 
     @Test(arguments: ["ledger", "catalog", "rule", "sync", "future-ledger", "duplicate-sample"])
     func corruptOrUnsupportedLegacyDataNeverPublishesEmptyState(kind: String) throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let ledgerURL = f.root.appendingPathComponent("\(f.first.historyID).json")
         switch kind {
         case "catalog": f.defaults.set(Data("{}".utf8), forKey: "airportCatalog.v1")
@@ -225,7 +156,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func futureV2VersionDoesNotFallBackToLegacy() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open()
         var value = store.snapshot; value.version = 99
         let bytes = try JSONEncoder().encode(value); try bytes.write(to: store.stateURL)
@@ -234,7 +165,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func staleWriterCannotOverwriteAnotherRepositoryCommit() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let first = try f.open(), stale = try f.open()
         _ = try f.change(first)
         #expect(throws: (any Error).self) { try f.change(stale, mode: .newSource) }
@@ -243,7 +174,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func oldSourceCallbackCannotOverwriteNewSource() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open(), old = try #require(store.source(for: f.first.id))
         _ = try f.change(store, mode: .newSource)
         #expect(throws: (any Error).self) { try store.updateSource(old) }
@@ -251,7 +182,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func workspaceSaveFailureAndRetryPreserveConfiguration() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         var fail = true
         let workspace = AirportWorkspace(defaults: f.defaults, historyDirectory: f.root, services: f.vault.services, startAutomatically: false,
                                          checkpoint: { if fail && $0 == .beforePublish { throw TrafficError.storage } })
@@ -272,7 +203,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func legacySingleAirportUsesExistingIdentityWithoutSideEffects() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         f.defaults.removeObject(forKey: "airportCatalog.v1")
         f.defaults.set(f.first.historyID, forKey: "profileID")
         f.vault.credentials["active-url"] = "https://legacy.example/secret"
@@ -284,7 +215,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func readOnlyDirectoryDuringPublishPreservesOldStateAndCanRecover() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let directory = f.root.appendingPathComponent("native-v2")
         var fail = true
         let store = try f.open { if fail && $0 == .beforePublish { try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path) } }
@@ -302,7 +233,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func migrationRetryRefusesChangedLegacyConfiguration() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         #expect(throws: RepositoryInterruption.self) { try f.open { if $0 == .migrationPrepared { throw RepositoryInterruption.simulatedCrash } } }
         f.defaults.set(12.0, forKey: "thresholdGB.legacy-a")
         #expect(throws: (any Error).self) { try f.open() }
@@ -312,7 +243,7 @@ struct NativeRepositoryTests {
 
     @Test(arguments: ["changed", "removed", "orphan"])
     func migrationRetryDoesNotPublishWhenLegacyFilesChange(kind: String) throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         #expect(throws: RepositoryInterruption.self) {
             try f.open { if $0 == .migrationPrepared { throw RepositoryInterruption.simulatedCrash } }
         }
@@ -345,7 +276,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func existingSnapshotDoesNotReadDamagedLegacyInputs() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open()
         let originalState = try Data(contentsOf: store.stateURL)
         let legacy = f.root.appendingPathComponent("\(f.first.historyID).json")
@@ -362,7 +293,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func snapshotWrittenBeforeStorageRefactorRemainsReadable() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let fixture = try #require(Bundle.module.url(forResource: "native-v2-before-storage-refactor",
                                                      withExtension: "json", subdirectory: "Fixtures"))
         let previousBytes = try Data(contentsOf: fixture)
@@ -386,7 +317,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func sourceRevisionRejectsLateWriteAfterRuleEdit() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open(), before = try #require(store.source(for: f.first.id))
         var rule = f.rule; rule.kind = .once
         _ = try store.saveAirport(profile: f.first, name: f.first.name, plan: f.first.plan, subscription: "", reset: rule, threshold: 6)
@@ -397,7 +328,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func failedReadingPersistenceKeepsBaselineForRetry() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         var fail = true
         let workspace = AirportWorkspace(defaults: f.defaults, historyDirectory: f.root, services: f.vault.services, startAutomatically: false,
                                          checkpoint: { if fail && $0 == .beforePublish { throw TrafficError.storage } })
@@ -412,7 +343,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func archiveAndRestorePersistGapWithoutDroppingHistory() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let workspace = AirportWorkspace(defaults: f.defaults, historyDirectory: f.root, services: f.vault.services, startAutomatically: false)
         workspace.archive(f.first, archived: true)
         let archived = try #require(workspace.repository?.source(for: f.first.id))
@@ -425,7 +356,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func invalidConfigurationFailsBeforeStagingCredentials() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open(), before = try Data(contentsOf: store.stateURL)
         #expect(throws: (any Error).self) { try store.saveAirport(profile: f.first, name: "", plan: "", subscription: "http://bad.example", reset: f.rule, threshold: 8) }
         #expect(try Data(contentsOf: store.stateURL) == before)
@@ -433,7 +364,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func orphanRequiresExplicitAssociationAndCannotReplaceActiveSource() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let name = "40000000-0000-0000-0000-000000000001.json"
         try f.original.write(to: f.root.appendingPathComponent(name))
         let attempt = SyncAttempt(date: Date(), subscription: nil, message: "连接超时")
@@ -452,7 +383,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func syncAttemptsAndPendingLinkSurviveRestartWithoutReplayingSample() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let attempt = SyncAttempt(date: Date(timeIntervalSinceReferenceDate: 800000400), subscription: nil, message: "连接超时")
         let log = try JSONEncoder().encode([attempt])
         try log.write(to: f.root.appendingPathComponent("\(f.first.historyID).json.sync"))
@@ -474,7 +405,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func legacyBackupCanBeReplayedWithoutDeletingV2Records() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open()
         _ = try f.change(store, mode: .newSource)
         let v2Bytes = try Data(contentsOf: store.stateURL)
@@ -501,7 +432,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func explicitSnapshotRecoveryPreservesDamagedFileAndOlderHistory() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open(); _ = try f.change(store)
         let damaged = Data("broken-state".utf8)
         try damaged.write(to: store.stateURL)
@@ -517,7 +448,7 @@ struct NativeRepositoryTests {
     }
 
     @Test func recoveryWithoutValidBackupDoesNotReplaceCurrentFile() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open(), before = try Data(contentsOf: store.stateURL)
         #expect(throws: (any Error).self) { try NativeRepository.restorePreviousSnapshot(root: f.root) }
         #expect(try Data(contentsOf: store.stateURL) == before)

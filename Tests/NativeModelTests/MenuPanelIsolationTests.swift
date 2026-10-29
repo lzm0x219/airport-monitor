@@ -3,19 +3,19 @@ import Foundation
 import TrafficCore
 @testable import NativeModels
 
-/// N13 exercises real workspace persistence while every external service is fake.
+/// Exercises real workspace persistence while every external service is fake.
 @Suite @MainActor
-struct Step13PanelIsolationTests {
+struct MenuPanelIsolationTests {
     @MainActor final class Fixture {
-        let original: NativeRepositoryTests.Fixture
-        let fetches = WorkspaceLifecycleTests.Fetches()
+        let original: NativeRepositoryFixture
+        let fetches = ControlledFetches()
         var sends = 0
         var permissionRequests = 0
         var failCommit = false
         var workspace: AirportWorkspace!
 
         init() throws {
-            original = try NativeRepositoryTests.Fixture()
+            original = try NativeRepositoryFixture()
             original.catalog.profiles[1].archived = false
             original.defaults.set(try JSONEncoder().encode(original.catalog), forKey: "airportCatalog.v1")
             original.defaults.set(false, forKey: "remindersEnabled")

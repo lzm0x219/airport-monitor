@@ -4,8 +4,9 @@ import ImageIO
 import UniformTypeIdentifiers
 
 // Standalone native verification; no subscriptions, preferences, or network access.
-// swiftc -parse-as-library Sources/App/OwlLogoGeometry.swift Sources/App/OwlTouchResponse.swift Sources/App/StatusLogoFeedback.swift \
+// swiftc -parse-as-library Sources/App/MenuBar/OwlLogoGeometry.swift Sources/App/MenuBar/OwlTouchResponse.swift Sources/App/MenuBar/StatusLogoFeedback.swift \
 //   tools/status-bar/verify-vector.swift -o /tmp/verify-airport-vector
+// /tmp/verify-airport-vector /tmp/airport-vector.png
 @main
 struct VerifyVector {
     struct Seeded: RandomNumberGenerator {

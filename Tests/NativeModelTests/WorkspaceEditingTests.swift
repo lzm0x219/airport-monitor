@@ -6,14 +6,14 @@ import TrafficCore
 @Suite @MainActor
 struct WorkspaceEditingTests {
     @MainActor final class Fixture {
-        let original: NativeRepositoryTests.Fixture
+        let original: NativeRepositoryFixture
         var now = Date(timeIntervalSince1970: 1_792_497_600)
         var reads = 0
         var sends = 0
         var failSave = false
         var workspace: AirportWorkspace!
         init() throws {
-            original = try NativeRepositoryTests.Fixture()
+            original = try NativeRepositoryFixture()
             var services = original.vault.services
             services.now = { self.now }
             services.fetch = { _ in

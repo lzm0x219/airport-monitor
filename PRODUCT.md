@@ -1,6 +1,6 @@
 <!-- impeccable:product-schema 1 -->
 
-界面约定见[设计规范](DESIGN.md)，使用方式和数据口径见[使用说明](USAGE.md)。
+界面约定见[设计规范](DESIGN.md)，使用方式和数据口径见[使用说明](docs/USAGE.md)。
 
 ## Platform
 

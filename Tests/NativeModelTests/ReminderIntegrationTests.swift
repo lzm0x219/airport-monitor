@@ -8,96 +8,8 @@ import UserNotifications
 /// and never hand a notification to UNUserNotificationCenter.
 @Suite @MainActor
 struct ReminderIntegrationTests {
-    @MainActor final class Fixture {
-        let original: NativeRepositoryTests.Fixture
-        var now = Date(timeIntervalSince1970: 1_792_497_600)
-        var used: UInt64 = 95_000_000_000
-        var expiry: Date?
-        var failFetch = false
-        var failCommit = false
-        var authorization: UNAuthorizationStatus = .authorized
-        var authorizationRequests = 0
-        var sends = 0
-        var reasons: [[ReminderReason]] = []
-        var store: NativeRepository!
-        var model: MonitorModel!
-
-        init() throws {
-            original = try NativeRepositoryTests.Fixture()
-            original.defaults.set(true, forKey: "remindersEnabled")
-            expiry = now.addingTimeInterval(30 * 86400)
-        }
-
-        var services: MonitorServices {
-            var result = original.vault.services
-            result.now = { self.now }
-            result.fetch = { _ in
-                if self.failFetch { throw TrafficError.network(-1009) }
-                return try Subscription(upload: 0, download: self.used, total: 100_000_000_000, expiry: self.expiry)
-            }
-            result.notificationAuthorizationStatus = { self.authorization }
-            result.requestNotificationAuthorization = { self.authorizationRequests += 1; return false }
-            result.reminderServices = ReminderServices(authorizationStatus: { self.authorization },
-                send: { _, _, reasons in self.sends += 1; self.reasons.append(reasons) },
-                queryAcceptance: { _ in .unknown }, now: { self.now })
-            return result
-        }
-
-        func open() throws {
-            store = try NativeRepository(root: original.root, defaults: original.defaults, services: services,
-                checkpoint: { [weak self] point in
-                    if self?.failCommit == true && point == .beforePublish { throw TrafficError.storage }
-                })
-        }
-
-        func makeModel() {
-            model?.stop()
-            let source = store.source(for: original.first.id)!
-            model = MonitorModel(profileID: source.id, credentialAccount: original.first.credentialAccount,
-                defaults: original.defaults, services: services, historyDirectory: original.root,
-                startAutomatically: false, repository: store, airportID: original.first.id)
-        }
-
-        func source() throws -> SourceRecord { try #require(store.source(for: original.first.id)) }
-
-        func seed() throws {
-            var source = try source()
-            var ledger = Ledger()
-            try ledger.append(Subscription(upload: 0, download: used, total: 100_000_000_000, expiry: expiry), at: now)
-            source.ledger = ledger
-            source.syncAttempts = []
-            source.needsVerification = false
-            source.migratedNotificationAt = nil
-            source.threshold = 10
-            source.thresholdMode = .percent
-            source.reminderPreferences = ReminderPreferences(forecastEnabled: false, expiryEnabled: false)
-            source.reminderState = ReminderState()
-            source.reminderDelivery = nil
-            try store.updateSource(source)
-        }
-
-        func advance(_ seconds: TimeInterval = 300) { now = now.addingTimeInterval(seconds) }
-
-        func seedForecast() throws {
-            try seed()
-            var source = try source(), ledger = Ledger(), rule = ResetRule()
-            rule.kind = .monthly; rule.day = 28; rule.timeZoneID = "UTC"
-            for day in 0...4 {
-                try ledger.append(Subscription(upload: 0, download: UInt64(55 + day * 10) * 1_000_000_000,
-                                               total: 100_000_000_000, expiry: expiry),
-                                  at: now.addingTimeInterval(Double(day - 4) * 86400))
-            }
-            source.ledger = ledger
-            source.resetRevisions = [ResetRevision(effectiveAt: nil, rule: rule)]
-            source.reminderPreferences = ReminderPreferences(lowEnabled: false, forecastEnabled: true, expiryEnabled: false)
-            try store.updateSource(source)
-        }
-
-        func cleanup() { model?.stop(); original.cleanup() }
-    }
-
     @Test func sameSourceRotationAndRestartKeepDeduplicationButNewSourceIsIndependent() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         try f.open(); try f.seed(); f.makeModel()
         await f.model.evaluateReminders()
         #expect(f.sends == 1)
@@ -118,7 +30,7 @@ struct ReminderIntegrationTests {
     }
 
     @Test func pauseAndArchiveSuppressManualReadsAndResumeDoesNotResendAcceptedRisk() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         try f.open(); try f.seed(); f.makeModel()
         await f.model.evaluateReminders()
         #expect(f.sends == 1)
@@ -138,7 +50,7 @@ struct ReminderIntegrationTests {
     }
 
     @Test func globalDisablePreservesTypeChoicesAndReenableOnlyUsesSelectedTypes() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         f.expiry = f.now.addingTimeInterval(6 * 86400)
         try f.open(); try f.seed(); f.makeModel()
         await f.model.applyGlobalPreferences(reminders: false)
@@ -157,7 +69,7 @@ struct ReminderIntegrationTests {
     }
 
     @Test func failedSyncOnlyEvaluatesLastKnownExpiryAndMarksItUnverified() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         f.expiry = f.now.addingTimeInterval(6 * 86400)
         try f.open(); try f.seed()
         var source = try f.source()
@@ -176,7 +88,7 @@ struct ReminderIntegrationTests {
     }
 
     @Test func staleReadingCanUpgradeExpiryWithoutRetriggeringLowBalance() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         f.expiry = f.now.addingTimeInterval(6 * 86400)
         try f.open(); try f.seed()
         var source = try f.source(); source.reminderPreferences = ReminderPreferences()
@@ -194,7 +106,7 @@ struct ReminderIntegrationTests {
     }
 
     @Test func failedPreferenceSaveDoesNotSendOrAlterSelectionAndHistory() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         try f.open(); try f.seed(); f.makeModel()
         let before = try Data(contentsOf: f.store.stateURL)
         f.failCommit = true
@@ -209,7 +121,7 @@ struct ReminderIntegrationTests {
     }
 
     @Test func failedFreshReadingSaveCannotCreateNewLowRiskNotification() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         f.used = 10_000_000_000
         try f.open(); try f.seed(); f.makeModel()
         let ids = f.model.ledger.samples.map(\.id)
@@ -223,7 +135,7 @@ struct ReminderIntegrationTests {
     }
 
     @Test func migratedLegacyRiskIsNotReissuedOnFirstSuccessfulRefresh() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         try f.open(); f.makeModel()
         #expect(f.model.ledger.lowBalanceNotified)
         await f.model.refresh()
@@ -233,7 +145,7 @@ struct ReminderIntegrationTests {
     }
 
     @Test func missingPermissionDoesNotSendOrPretendRiskWasAccepted() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         try f.open(); try f.seed(); f.makeModel(); f.authorization = .denied
         await f.model.evaluateReminders()
         #expect(f.sends == 0 && f.authorizationRequests == 0)
@@ -245,7 +157,7 @@ struct ReminderIntegrationTests {
 
     @Test(arguments: ["airport", "paused", "archived", "allTypes"])
     func eachScopeSuppressesAnUnsentRiskWithoutErasingHistory(scope: String) async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         try f.open(); try f.seed(); f.makeModel()
         let ids = f.model.ledger.samples.map(\.id)
         if scope == "airport" {
@@ -263,7 +175,7 @@ struct ReminderIntegrationTests {
     }
 
     @Test func successfulRefreshCanConfirmForecastAfterBusyRequestCompletes() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         try f.open(); try f.seedForecast(); f.makeModel()
         #expect(f.model.forecastResult.estimate != nil)
         f.advance(); f.used += 10_000_000
@@ -276,7 +188,7 @@ struct ReminderIntegrationTests {
     }
 
     @Test func failedReadBreaksForecastConfirmationAndRecoveryRequiresTwoFreshObservations() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         try f.open(); try f.seedForecast(); f.makeModel()
         f.advance(); await f.model.refresh()
         #expect(f.sends == 0)
@@ -293,7 +205,7 @@ struct ReminderIntegrationTests {
     }
 
     @Test func newAirportDefaultsAndNewSourcePreservesChoicesWithIndependentRiskState() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         try f.open()
         let created = try f.store.saveAirport(profile: nil, name: "新增机场", plan: "", subscription: "https://new.example/sub",
                                                reset: ResetRule(), threshold: 7.5)
@@ -316,7 +228,7 @@ struct ReminderIntegrationTests {
     }
 
     @Test func oldV2WithoutReminderFieldsDecodesAndUsesLegacyGBWithoutEnablingNewTypes() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         try f.open(); try f.seed()
         var source = try f.source(), ledger = Ledger()
         try ledger.append(Subscription(upload: 0, download: 992_000_000_000, total: 1_000_000_000_000,
@@ -337,7 +249,7 @@ struct ReminderIntegrationTests {
     }
 
     @Test func legacyGBSaveUpdatesActualReminderPolicyAndRepeatedSaveDoesNotResend() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         try f.open(); try f.seed(); f.makeModel()
         let rule = try f.source().resetRule
         await f.model.savePreferences(interval: 15, reminders: true, threshold: 4, reset: rule)
@@ -352,7 +264,7 @@ struct ReminderIntegrationTests {
     }
 
     @Test func savingOtherLegacySettingsWithoutChangingThresholdPreservesPercentageChoice() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         try f.open(); try f.seed(); f.makeModel()
         let source = try f.source()
         await f.model.savePreferences(interval: 30, reminders: false, threshold: source.threshold, reset: source.resetRule)

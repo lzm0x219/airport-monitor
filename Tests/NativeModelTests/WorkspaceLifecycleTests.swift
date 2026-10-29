@@ -5,74 +5,9 @@ import TrafficCore
 
 @Suite @MainActor
 struct WorkspaceLifecycleTests {
-    @MainActor final class Fetches {
-        var requests: [CheckedContinuation<Subscription, any Error>] = []
-        var resolved = Set<Int>()
-        func fetch(_ url: URL) async throws -> Subscription {
-            try await withCheckedThrowingContinuation { requests.append($0) }
-        }
-        func succeed(_ index: Int, used: UInt64 = 500) throws {
-            guard resolved.insert(index).inserted else { return }
-            requests[index].resume(returning: try Subscription(upload: 120, download: used, total: 10000))
-        }
-        func fail(_ index: Int) {
-            guard resolved.insert(index).inserted else { return }
-            requests[index].resume(throwing: TrafficError.network(-1009))
-        }
-        func finish() { for index in requests.indices where !resolved.contains(index) { fail(index) } }
-        func waitFor(_ count: Int) async throws {
-            for _ in 0..<1000 {
-                if requests.count >= count { return }
-                try await Task.sleep(for: .milliseconds(1))
-            }
-            Issue.record("Expected \(count) requests, observed \(requests.count)")
-            throw TrafficError.storage
-        }
-    }
-
-    @MainActor final class Fixture {
-        let original: NativeRepositoryTests.Fixture
-        let fetches = Fetches()
-        var failCommit = false
-        var workspace: AirportWorkspace!
-        init() throws {
-            original = try NativeRepositoryTests.Fixture()
-            // Stable order: main, paused backup, running backup.
-            original.catalog.profiles[1].archived = false
-            let third = AirportProfile(id: UUID(), historyID: UUID().uuidString, credentialAccount: "legacy-c",
-                name: "第三机场", plan: "保留套餐", enabled: true, archived: false)
-            original.catalog.profiles.append(third)
-            original.vault.credentials[third.credentialAccount] = "https://c.example/subscription"
-            try original.original.write(to: original.root.appendingPathComponent("\(third.historyID).json"))
-            original.defaults.set(try JSONEncoder().encode(original.catalog), forKey: "airportCatalog.v1")
-            var services = original.vault.services
-            services.fetch = { [fetches] in try await fetches.fetch($0) }
-            services.requestNotificationAuthorization = { false }
-            workspace = AirportWorkspace(defaults: original.defaults, historyDirectory: original.root,
-                services: services, startAutomatically: false, checkpoint: { [weak self] point in
-                    if self?.failCommit == true && point == .beforePublish { throw TrafficError.storage }
-                })
-            #expect(!workspace.catalogBlocked)
-        }
-        func cleanup() {
-            for profile in workspace.profiles { workspace.model(for: profile).stop() }
-            fetches.finish(); original.cleanup()
-        }
-        var main: AirportProfile { workspace.profiles[0] }
-        var model: MonitorModel { workspace.model(for: main) }
-        var store: NativeRepository { workspace.repository! }
-        func waitUntilIdle(_ model: MonitorModel) async throws {
-            for _ in 0..<1000 {
-                if !model.busy { return }
-                try await Task.sleep(for: .milliseconds(1))
-            }
-            Issue.record("Request did not finish"); throw TrafficError.storage
-        }
-    }
-
     @Test(arguments: [false, true])
     func pauseInvalidatesLateSuccessAndFailure(lateFailure: Bool) async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try WorkspaceLifecycleFixture(); defer { f.cleanup() }
         let before = try #require(f.store.source(for: f.main.id))
         let request = Task { await f.model.refresh() }
         try await f.fetches.waitFor(1)
@@ -88,7 +23,7 @@ struct WorkspaceLifecycleTests {
     }
 
     @Test func rapidResumeRejectsEarlierRequestWithoutClearingNewBusyState() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try WorkspaceLifecycleFixture(); defer { f.cleanup() }
         let before = f.model.ledger.samples.count
         let request = Task { await f.model.refresh() }
         try await f.fetches.waitFor(1)
@@ -104,7 +39,7 @@ struct WorkspaceLifecycleTests {
     }
 
     @Test func archiveCancelsRequestAndRestoreFirstReadCanFailThenRetry() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try WorkspaceLifecycleFixture(); defer { f.cleanup() }
         let before = f.model.ledger.samples.map(\.id)
         let old = Task { await f.model.refresh() }
         try await f.fetches.waitFor(1)
@@ -136,7 +71,7 @@ struct WorkspaceLifecycleTests {
     }
 
     @Test func pauseResumePauseInvalidatesBothUncooperativeRequests() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try WorkspaceLifecycleFixture(); defer { f.cleanup() }
         let before = try #require(f.store.source(for: f.main.id))
         let first = Task { await f.model.refresh() }
         try await f.fetches.waitFor(1)
@@ -156,7 +91,7 @@ struct WorkspaceLifecycleTests {
     }
 
     @Test func refreshAllRechecksQueuedAirportAfterPause() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try WorkspaceLifecycleFixture(); defer { f.cleanup() }
         let all = Task { await f.workspace.refreshAll() }
         try await f.fetches.waitFor(1)
         f.workspace.setEnabled(f.workspace.profiles[2], false)
@@ -166,7 +101,7 @@ struct WorkspaceLifecycleTests {
     }
 
     @Test func pausedRestoreKeepsPreferenceAndOnlyManualReadRuns() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try WorkspaceLifecycleFixture(); defer { f.cleanup() }
         let paused = f.workspace.profiles[1], model = f.workspace.model(for: paused)
         f.workspace.archive(paused, archived: true)
         f.workspace.archive(paused, archived: false)
@@ -179,7 +114,7 @@ struct WorkspaceLifecycleTests {
     }
 
     @Test func primaryHandoffUsesStableUnpausedThenPausedFallbackAndRestoreFillsOnlyEmpty() throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try WorkspaceLifecycleFixture(); defer { f.cleanup() }
         let first = f.main, second = f.workspace.profiles[1], third = f.workspace.profiles[2]
         f.workspace.setEnabled(first, false)
         f.workspace.archive(first, archived: true)
@@ -197,7 +132,7 @@ struct WorkspaceLifecycleTests {
 
     @Test(arguments: [false, true])
     func failedLifecycleCommitLeavesInFlightRequestAndSelectionIntact(archive: Bool) async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try WorkspaceLifecycleFixture(); defer { f.cleanup() }
         let oldBytes = try Data(contentsOf: f.store.stateURL)
         let request = Task { await f.model.refresh() }
         try await f.fetches.waitFor(1)
@@ -213,7 +148,7 @@ struct WorkspaceLifecycleTests {
     }
 
     @Test func duplicateSaveCommitsOnceAndReadFailureDoesNotUndoSavedConfiguration() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try WorkspaceLifecycleFixture(); defer { f.cleanup() }
         let before = f.model.ledger.samples.map(\.id)
         let profile = f.main
         let save = Task { await f.workspace.save(profile: profile, name: "已保存名称", plan: "保留套餐",
@@ -232,7 +167,7 @@ struct WorkspaceLifecycleTests {
     }
 
     @Test func failedRestoreDoesNotStartRequestAndRetryClosesTheSameGap() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try WorkspaceLifecycleFixture(); defer { f.cleanup() }
         f.workspace.archive(f.main, archived: true)
         let before = try Data(contentsOf: f.store.stateURL)
         f.failCommit = true
@@ -249,7 +184,7 @@ struct WorkspaceLifecycleTests {
     }
 
     @Test func globalPreferencesApplyDuringFetchAndIncludeArchivedAirports() async throws {
-        let f = try Fixture(); defer { f.cleanup() }
+        let f = try WorkspaceLifecycleFixture(); defer { f.cleanup() }
         f.workspace.archive(f.workspace.profiles[1], archived: true)
         let request = Task { await f.model.refresh() }
         try await f.fetches.waitFor(1)

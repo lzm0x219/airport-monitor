@@ -1,6 +1,6 @@
 # Airport Monitor
 
-机场订阅、采样、统计和提醒使用的术语。具体规则见[使用说明](USAGE.md)与[决策记录](docs/adr/)。
+机场订阅、采样、统计和提醒使用的术语。具体规则见[使用说明](docs/USAGE.md)与[决策记录](docs/adr/)。
 
 ## Language
 

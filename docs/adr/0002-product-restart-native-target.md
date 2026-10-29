@@ -1,7 +1,7 @@
 # 产品重启后的原生实施目标
 
 Date: 2026-10-23
-Status: 历史规划；现行范围见 [PRODUCT.md](../../PRODUCT.md) 和 [USAGE.md](../../USAGE.md)。
+Status: 历史规划；现行范围见 [PRODUCT.md](../../PRODUCT.md) 和 [USAGE.md](../USAGE.md)。
 
 ## 背景
 
@@ -9,7 +9,7 @@ Status: 历史规划；现行范围见 [PRODUCT.md](../../PRODUCT.md) 和 [USAGE
 
 ## 决定
 
-以当时的产品与设计基线作为实施目标入口，结合差距表和实施方案确定顺序与验收。这些历史资料已移入废纸篓；现行产品说明见[PRODUCT.md](../../PRODUCT.md)与[USAGE.md](../../USAGE.md)。
+以当时的产品与设计基线作为实施目标入口，结合差距表和实施方案确定顺序与验收。这些历史资料已移入废纸篓；现行产品说明见[PRODUCT.md](../../PRODUCT.md)与[USAGE.md](../USAGE.md)。
 
 继续原生SwiftUI／AppKit；复用网络解析、钥匙串、文件保护和重置计算，不把合成浏览器数据或简化时区算法移入生产。先完成来源身份、提交恢复及同步生命周期，再做统计预测、提醒和UI接入。
 

@@ -2,6 +2,9 @@ import AppKit
 
 // Compile all Sources with -D STATUS_INTERACTION_TEST and this entry point.
 // Demo workspace isolates storage, credentials, notifications and network.
+// swiftc -parse-as-library -D STATUS_INTERACTION_TEST \
+//   $(find Sources -name '*.swift' -print) tools/status-bar/verify-panel-click.swift -o /tmp/verify-airport-panel
+// /tmp/verify-airport-panel
 @main struct VerifyPanelClick {
     @MainActor static func main() {
         let app = NSApplication.shared

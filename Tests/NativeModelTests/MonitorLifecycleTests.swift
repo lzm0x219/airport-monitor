@@ -5,26 +5,7 @@ import TrafficCore
 
 @Suite @MainActor
 struct MonitorLifecycleTests {
-    /// Deliberately ignores cancellation: eligibility must protect data even with an uncooperative transport.
-    @MainActor final class Transport {
-        var pending: [CheckedContinuation<TrafficCore.Subscription, Error>] = []
-        func fetch(_ url: URL) async throws -> TrafficCore.Subscription {
-            try await withCheckedThrowingContinuation { pending.append($0) }
-        }
-        func waitFor(_ count: Int) async throws {
-            for _ in 0..<10000 {
-                if pending.count >= count { return }
-                await Task.yield()
-            }
-            throw TrafficError.network(-1001)
-        }
-        func succeed(_ index: Int, used: UInt64 = 700) throws {
-            pending[index].resume(returning: try TrafficCore.Subscription(upload: 120, download: used, total: 10000))
-        }
-        func fail(_ index: Int) { pending[index].resume(throwing: TrafficError.network(-1009)) }
-    }
-
-    func model(_ f: NativeRepositoryTests.Fixture, _ store: NativeRepository, _ transport: Transport) -> MonitorModel {
+    func model(_ f: NativeRepositoryFixture, _ store: NativeRepository, _ transport: UncooperativeTransport) -> MonitorModel {
         var services = f.vault.services
         services.fetch = { try await transport.fetch($0) }
         services.requestNotificationAuthorization = { false }
@@ -34,8 +15,8 @@ struct MonitorLifecycleTests {
     }
 
     @Test(arguments: [false, true]) func stoppedRequestCannotWrite(success: Bool) async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), transport = Transport(), m = model(f, store, transport)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), transport = UncooperativeTransport(), m = model(f, store, transport)
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
         let before = try encoder.encode(store.snapshot)
         let task = Task { await m.refresh() }
@@ -50,8 +31,8 @@ struct MonitorLifecycleTests {
 
     @Test(arguments: [false, true])
     func oldCompletionCannotClearNewRequestBusyOrOverwriteItsResult(success: Bool) async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), transport = Transport(), m = model(f, store, transport)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), transport = UncooperativeTransport(), m = model(f, store, transport)
         defer { m.stop() }
         let old = Task { await m.refresh() }; try await transport.waitFor(1)
         m.invalidateRequests()
@@ -65,7 +46,7 @@ struct MonitorLifecycleTests {
     }
 
     @Test func previewAndSyncShareThePersistentSeventyTwoHourGate() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open()
         let gateURL = f.root.appendingPathComponent("isolated-request-gate.json")
         let previewGate = SubscriptionRequestGate(storeURL: gateURL)
@@ -116,8 +97,8 @@ struct MonitorLifecycleTests {
     }
 
     @Test func callerCancellationDoesNotRecordFailureOrSample() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), transport = Transport(), m = model(f, store, transport)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), transport = UncooperativeTransport(), m = model(f, store, transport)
         defer { m.stop() }
         let ids = m.ledger.samples.map(\.id)
         let task = Task { await m.refresh() }; try await transport.waitFor(1)
@@ -127,8 +108,8 @@ struct MonitorLifecycleTests {
     }
 
     @Test func pausedManualSyncIsAllowedAndDoesNotEnableAutomaticSync() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), transport = Transport(), m = model(f, store, transport)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), transport = UncooperativeTransport(), m = model(f, store, transport)
         defer { m.stop() }
         var catalog = store.snapshot.catalog; catalog.profiles[0].enabled = false
         try store.updateCatalog(catalog)
@@ -143,8 +124,8 @@ struct MonitorLifecycleTests {
     }
 
     @Test(arguments: [false, true]) func sameSourceReplacementRejectsOldSuccessAndFailure(success: Bool) async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), transport = Transport(), m = model(f, store, transport)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), transport = UncooperativeTransport(), m = model(f, store, transport)
         defer { m.stop() }
         let task = Task { await m.refresh() }; try await transport.waitFor(1)
         _ = try f.change(store)
@@ -158,8 +139,8 @@ struct MonitorLifecycleTests {
     }
 
     @Test func busyPreferenceSaveIsNotLostWhenFetchCompletes() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), transport = Transport(), m = model(f, store, transport)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), transport = UncooperativeTransport(), m = model(f, store, transport)
         defer { m.stop() }
         let sampleCount = m.ledger.samples.count
         let task = Task { await m.refresh() }; try await transport.waitFor(1)
@@ -174,8 +155,8 @@ struct MonitorLifecycleTests {
     }
 
     @Test func globalPreferencesDoNotRewriteSourceWhileBusy() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), transport = Transport(), m = model(f, store, transport)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), transport = UncooperativeTransport(), m = model(f, store, transport)
         defer { m.stop() }
         let revision = store.snapshot.revision
         let task = Task { await m.refresh() }; try await transport.waitFor(1)

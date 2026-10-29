@@ -1,6 +1,6 @@
 # Airport Monitor 使用与数据说明
 
-本文说明日常操作、数据口径和故障恢复。[返回项目首页](README.md)。当前源码版本为 1.0.0（build 1）。为兼容旧数据，应用沿用原内部 Bundle Identifier 和存储目录，正常升级无需重新输入订阅。
+本文说明日常操作、数据口径和故障恢复。[返回项目首页](../README.md)。当前源码版本为 1.0.0（build 1）。为兼容旧数据，应用沿用原内部 Bundle Identifier 和存储目录，正常升级无需重新输入订阅。
 
 ## 运行
 
@@ -14,7 +14,7 @@
 
 ## 用 Xcode 打开编译
 
-建议使用 Xcode 26 或更新版本，打开 `AirportMonitor.xcodeproj`，选择共享 scheme **AirportMonitor** 和 **My Mac**，按 ⌘R。也可在终端构建 Apple Silicon 与 Intel 的 Release 版本：
+建议使用 Xcode 26 或更新版本，打开 `AirportMonitor.xcodeproj`，选择共享 scheme **AirportMonitor** 和 **My Mac**，按 ⌘R。也可在项目根目录通过终端构建 Apple Silicon 与 Intel 的 Release 版本：
 
 ```sh
 xcodebuild -project AirportMonitor.xcodeproj \
@@ -48,13 +48,13 @@ swift test --scratch-path /tmp/AirportMonitorTests
 
 跨重置、计数回退、总额、来源或规则变化后重新积累；未知余量、缺少有效重置、零增长或到期不晚于重置时不能给出有效预测。失败、暂停、待核对等情况下，已有估计会标为历史。预测仅供参考，参数尚未经长期真实数据验证。
 
-预计不足提醒使用独立的连续预测资格，不由主窗口预测直接触发。细节见[统计与预测决策](docs/adr/0004-observed-statistics-and-forecast.md)和[提醒决策](docs/adr/0005-reminder-policy-and-delivery.md)。
+预计不足提醒使用独立的连续预测资格，不由主窗口预测直接触发。细节见[统计与预测决策](adr/0004-observed-statistics-and-forecast.md)和[提醒决策](adr/0005-reminder-policy-and-delivery.md)。
 
 ## 提醒
 
 开启系统通知并获得 macOS 授权后，可按机场选择低余量、预计不足和到期提醒。新机场的低余量阈值按总额百分比判断；旧版 GB 阈值保留，也可改用百分比。
 
-提醒有持久去重和冷却规则。系统接受通知请求不代表用户一定看到横幅，资格与投递边界见[提醒决策](docs/adr/0005-reminder-policy-and-delivery.md)。
+提醒有持久去重和冷却规则。系统接受通知请求不代表用户一定看到横幅，资格与投递边界见[提醒决策](adr/0005-reminder-policy-and-delivery.md)。
 
 ## 隐私、存储与故障恢复
 
@@ -64,7 +64,7 @@ swift test --scratch-path /tmp/AirportMonitorTests
 - 损坏或不兼容的历史不会静默覆盖，应用会暂停相关采样。设置的「数据与隐私」中可隔离损坏文件并重新开始，原文件保留为 `.corrupt` 副本；写盘失败时不会把未落盘的读数当成成功。
 - 旧来源历史保留，归档不会删除钥匙串条目或注销远端订阅。当前不自动裁剪历史，也没有 CSV 导出；可在主窗口查看来源历史。
 
-存储身份、原子提交与恢复边界见[存储决策](docs/adr/0003-native-source-storage.md)。
+存储身份、原子提交与恢复边界见[存储决策](adr/0003-native-source-storage.md)。
 
 ## 设计预览
 

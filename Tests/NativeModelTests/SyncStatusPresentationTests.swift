@@ -6,7 +6,7 @@ import TrafficCore
 @Suite @MainActor
 struct SyncStatusPresentationTests {
     @Test func plannedWaitEligibilityFailureAndClockRemainDistinct() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open()
         let readAt = ISO8601DateFormatter().date(from: "2026-10-11T00:00:00Z")!
         var source = try #require(store.source(for: f.first.id))
@@ -47,7 +47,7 @@ struct SyncStatusPresentationTests {
         #expect(WorkspacePresentation(model: model).status == "同步失败")
     }
     @Test func futureReadIsNotNormalWait() throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open()
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         var source = try #require(store.source(for: f.first.id))

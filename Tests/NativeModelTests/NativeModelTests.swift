@@ -176,7 +176,7 @@ struct NativeModelTests {
         #expect(defaults.object(forKey: "settings.selectedSection") == nil)
     }
     @Test func normalAndIsolatedReviewSettingsSelectionsPersist() throws {
-        let fixture = try NativeRepositoryTests.Fixture(); defer { fixture.cleanup() }
+        let fixture = try NativeRepositoryFixture(); defer { fixture.cleanup() }
         for isolatedReview in [false, true] {
             let workspace = AirportWorkspace(defaults: fixture.defaults, historyDirectory: fixture.root,
                                              services: fixture.vault.services, startAutomatically: false,

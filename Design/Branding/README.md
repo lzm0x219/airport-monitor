@@ -14,7 +14,7 @@
 
 异常状态使用珊瑚红双叉眼、伸舌头猫头鹰：浅色 `#CF5149`，深色 `#FF8A80`。异常条件沿用既有 `needsAttention`，具体原因由面板文字说明；余额文字仍使用系统颜色。
 
-静态与动态轮廓共用 `Sources/App/OwlLogoGeometry.swift` 的矢量路径，`OwlTouchResponse` 和 `StatusLogoFeedback` 负责动效。更新原稿后需同步路径，并运行 `tools/status-bar/verify-vector.swift` 验证随机响应边界。
+静态与动态轮廓共用 `Sources/App/MenuBar/OwlLogoGeometry.swift` 的矢量路径，`OwlTouchResponse` 和 `StatusLogoFeedback` 负责动效。更新原稿后需同步路径，并运行 `tools/status-bar/verify-vector.swift` 验证随机响应边界。
 
 ## 重新导出
 

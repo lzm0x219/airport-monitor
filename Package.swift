@@ -8,8 +8,24 @@ let package = Package(
     targets: [
         .target(name: "TrafficCore", path: "Sources/Core"),
         .target(name: "NativeModels", dependencies: ["TrafficCore"], path: "Sources/App",
-                exclude: ["AirportMonitorApp.swift", "StatusLogoFeedback.swift", "OwlLogoGeometry.swift", "OwlTouchResponse.swift", "NavigationBenchmark.swift", "PanelPlacement.swift", "QuotaPanel.swift", "NativeDesign.swift", "WorkspaceView.swift", "AirportEditor.swift", "SettingsView.swift", "AirportUsageCharts.swift", "InlineAirportConnection.swift", "WorkspaceControls.swift", "WorkspaceReviewSupport.swift", "WorkspaceScaleFixture.swift", "Assets.xcassets"],
-                sources: ["Keychain.swift", "MonitorModel.swift", "AirportWorkspace.swift", "NativeRepository.swift", "NativeSnapshot.swift", "LegacyMigration.swift", "ReminderCoordinator.swift", "SubscriptionPreview.swift", "SubscriptionReadLifecycle.swift", "QuotaPresentation.swift", "WorkspacePresentation.swift", "AirportEditingSession.swift", "SingleInstanceCoordinator.swift"]),
+                exclude: [
+                    "Application/AirportMonitorApp.swift",
+                    "MenuBar/StatusLogoFeedback.swift", "MenuBar/OwlLogoGeometry.swift", "MenuBar/OwlTouchResponse.swift",
+                    "MenuBar/PanelPlacement.swift", "MenuBar/QuotaPanel.swift",
+                    "Presentation/NativeDesign.swift", "Presentation/WorkspaceControls.swift",
+                    "Review/NavigationBenchmark.swift", "Review/WorkspaceReviewSupport.swift", "Review/WorkspaceScaleFixture.swift",
+                    "Settings/SettingsView.swift",
+                    "Workspace/WorkspaceView.swift", "Workspace/AirportEditor.swift", "Workspace/AirportUsageCharts.swift",
+                    "Workspace/InlineAirportConnection.swift", "Assets.xcassets"
+                ],
+                sources: [
+                    "Application/SingleInstanceCoordinator.swift",
+                    "Monitoring/MonitorModel.swift", "Monitoring/ReminderCoordinator.swift",
+                    "Monitoring/SubscriptionPreview.swift", "Monitoring/SubscriptionReadLifecycle.swift",
+                    "Presentation/QuotaPresentation.swift", "Presentation/WorkspacePresentation.swift",
+                    "Storage/Keychain.swift", "Storage/NativeRepository.swift", "Storage/NativeSnapshot.swift", "Storage/LegacyMigration.swift",
+                    "Workspace/AirportWorkspace.swift", "Workspace/AirportEditingSession.swift"
+                ]),
         .testTarget(name: "CoreTests", dependencies: ["TrafficCore"], path: "Tests/CoreTests"),
         .testTarget(name: "NativeModelTests", dependencies: ["NativeModels", "TrafficCore"], path: "Tests/NativeModelTests",
                     resources: [.copy("Fixtures")])

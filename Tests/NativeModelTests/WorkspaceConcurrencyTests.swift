@@ -5,10 +5,10 @@ import TrafficCore
 @testable import NativeModels
 
 @Suite @MainActor
-struct MultiInstanceTests {
+struct WorkspaceConcurrencyTests {
     @MainActor final class Fixture {
-        let original: NativeRepositoryTests.Fixture
-        let fetches = WorkspaceLifecycleTests.Fetches()
+        let original: NativeRepositoryFixture
+        let fetches = ControlledFetches()
         let gate: SubscriptionRequestGate
         var now = Date(timeIntervalSince1970: 1_792_497_600 + 30 * 86400)
         var reads = 0
@@ -19,7 +19,7 @@ struct MultiInstanceTests {
         var second: AirportWorkspace!
 
         init() throws {
-            original = try NativeRepositoryTests.Fixture()
+            original = try NativeRepositoryFixture()
             gate = SubscriptionRequestGate(storeURL: original.root.appendingPathComponent("multi-instance-gate.json"))
             first = open()
             second = open()

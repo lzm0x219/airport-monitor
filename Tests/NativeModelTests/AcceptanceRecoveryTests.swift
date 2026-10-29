@@ -9,7 +9,7 @@ import TrafficCore
 struct AcceptanceRecoveryTests {
     @Test(arguments: [RepositoryCheckpoint.migrationPrepared, .migrationPublished])
     func repeatedMigrationRecoveryDoesNotRewriteLegacyOrDuplicateSamples(point: RepositoryCheckpoint) throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         #expect(throws: RepositoryInterruption.self) {
             try f.open { if $0 == point { throw RepositoryInterruption.simulatedCrash } }
         }
@@ -32,7 +32,7 @@ struct AcceptanceRecoveryTests {
     }
 
     @Test func duplicateArchiveRestoreAndLateFailureKeepOneGapAndOneNewSample() async throws {
-        let f = try WorkspaceLifecycleTests.Fixture(); defer { f.cleanup() }
+        let f = try WorkspaceLifecycleFixture(); defer { f.cleanup() }
         let before = try #require(f.store.source(for: f.main.id))
         let old = Task { await f.model.refresh() }
         try await f.fetches.waitFor(1)
@@ -64,7 +64,7 @@ struct AcceptanceRecoveryTests {
     }
 
     @Test func repeatedExplicitSnapshotRecoveryPreservesDamagedAndNewerData() throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open()
         _ = try f.change(store, mode: .newSource)
         let newer = try Data(contentsOf: store.stateURL)
@@ -95,10 +95,10 @@ struct AcceptanceRecoveryTests {
     }
 
     @Test func repeatedCrashReconciliationNeverResubmitsAcceptedReminder() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         var failPersistence = false
         let store = try f.open { if failPersistence && $0 == .beforePublish { throw TrafficError.storage } }
-        let clock = ReminderDeliveryTests.Clock()
+        let clock = ReminderDeliveryFixture()
         try ReminderDeliveryTests().prepare(store, f.first.id)
         clock.onSend = { failPersistence = true }
         let coordinator = ReminderCoordinator(repository: store, services: clock.services)
@@ -119,7 +119,7 @@ struct AcceptanceRecoveryTests {
     }
 
     @Test func failedSyncSurvivesRestartAndSuccessfulRetryRestoresCurrentForecast() async throws {
-        let f = try ReminderIntegrationTests.Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         try f.open(); try f.seedForecast(); f.makeModel()
         let originalIDs = f.model.ledger.samples.map(\.id)
         #expect(f.model.forecastResult.estimate != nil)
@@ -141,7 +141,7 @@ struct AcceptanceRecoveryTests {
     }
 
     @Test func restartedFailureAllowsOnlyUnverifiedExpiryUntilSuccessfulRead() async throws {
-        let f = try ReminderIntegrationTests.Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         f.original.defaults.set(false, forKey: "remindersEnabled")
         f.expiry = f.now.addingTimeInterval(6 * 86400)
         try f.open(); try f.seed()
@@ -162,7 +162,7 @@ struct AcceptanceRecoveryTests {
     }
 
     @Test func recoveryUsesFailureDatesNotArrayOrderAndNewSuccessOrSourceClearsOldError() throws {
-        let f = try ReminderIntegrationTests.Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         try f.open(); try f.seed()
         var source = try f.source()
         source.syncAttempts = [
@@ -189,7 +189,7 @@ struct AcceptanceRecoveryTests {
     }
 
     @Test func reapplyingSameSourceCannotClearUnpersistedStorageFailure() async throws {
-        let f = try ReminderIntegrationTests.Fixture(); defer { f.cleanup() }
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
         try f.open(); try f.seedForecast(); f.makeModel()
         let sampleID = f.model.latest?.id
         f.failCommit = true; f.advance()

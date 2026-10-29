@@ -6,29 +6,6 @@ import TrafficCore
 
 @Suite @MainActor
 struct ReminderDeliveryTests {
-    @MainActor final class Clock {
-        var date = Date(timeIntervalSince1970: 1_800_000_000)
-        var sends = [String]()
-        var sentReasons = [[ReminderReason.Kind]]()
-        var fail = false
-        var authorization = UNAuthorizationStatus.authorized
-        var query = ReminderAcceptance.unknown
-        var onAuthorization: (() async -> Void)?
-        var onSend: (() async -> Void)?
-        var services: ReminderServices {
-            ReminderServices(authorizationStatus: {
-                await self.onAuthorization?(); return self.authorization
-            }, send: { id, _, reasons in
-                self.sends.append(id); self.sentReasons.append(reasons.map(\.kind)); await self.onSend?()
-                if self.fail { throw TrafficError.network(-1009) }
-            }, queryAcceptance: { _ in self.query }, now: { self.date })
-        }
-        var input: ReminderInput {
-            ReminderInput(now: date, sampleID: UUID(uuidString: "40000000-0000-0000-0000-000000000001"),
-                          observedAt: date, remainingBytes: 5, totalBytes: 100, usageFresh: true, globalEnabled: true)
-        }
-    }
-
     func prepare(_ store: NativeRepository, _ id: UUID) throws {
         var source = try #require(store.source(for: id))
         source.reminderPreferences = ReminderPreferences(forecastEnabled: false, expiryEnabled: false)
@@ -37,8 +14,8 @@ struct ReminderDeliveryTests {
     }
 
     @Test func failureRetriesAfterFiveMinutesAndOnlyAcceptanceDeduplicates() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), clock = Clock(); try prepare(store, f.first.id)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture(); try prepare(store, f.first.id)
         let coordinator = ReminderCoordinator(repository: store, services: clock.services)
         clock.fail = true
         #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { clock.input }) == .retryScheduled)
@@ -56,8 +33,8 @@ struct ReminderDeliveryTests {
     }
 
     @Test func deniedPermissionNeverSubmitsOrCreatesRetry() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), clock = Clock(); try prepare(store, f.first.id)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture(); try prepare(store, f.first.id)
         clock.authorization = .denied
         let coordinator = ReminderCoordinator(repository: store, services: clock.services)
         for _ in 0..<3 { #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { clock.input }) == .denied) }
@@ -67,8 +44,8 @@ struct ReminderDeliveryTests {
     }
 
     @Test func retryReevaluatesCurrentRiskInsteadOfReplayingFailedReasons() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), clock = Clock(); try prepare(store, f.first.id)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture(); try prepare(store, f.first.id)
         clock.fail = true
         let coordinator = ReminderCoordinator(repository: store, services: clock.services)
         #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { clock.input }) == .retryScheduled)
@@ -83,7 +60,7 @@ struct ReminderDeliveryTests {
     }
 
     @Test(arguments: [1, 2]) func storageFailureBeforeIntentionPreventsSubmission(failingCommit: Int) async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         var block = false, commits = 0
         let store = try f.open {
             if block && $0 == .beforePublish {
@@ -91,17 +68,17 @@ struct ReminderDeliveryTests {
                 if commits == failingCommit { throw TrafficError.storage }
             }
         }
-        let clock = Clock(); try prepare(store, f.first.id); block = true
+        let clock = ReminderDeliveryFixture(); try prepare(store, f.first.id); block = true
         let coordinator = ReminderCoordinator(repository: store, services: clock.services)
         #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { clock.input }) == .storageFailure)
         #expect(clock.sends.isEmpty)
     }
 
     @Test func crashAfterSystemAcceptanceReconcilesWithoutResending() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         var block = false
         let store = try f.open { if block && $0 == .beforePublish { throw TrafficError.storage } }
-        let clock = Clock(); try prepare(store, f.first.id)
+        let clock = ReminderDeliveryFixture(); try prepare(store, f.first.id)
         clock.onSend = { block = true }
         let coordinator = ReminderCoordinator(repository: store, services: clock.services)
         #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { clock.input }) == .storageFailure)
@@ -116,8 +93,8 @@ struct ReminderDeliveryTests {
 
     @Test func unknownAndAbsentPendingRequestsStayUnconfirmed() async throws {
         for acceptance in [ReminderAcceptance.unknown, .notFound] {
-            let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-            let store = try f.open(), clock = Clock(); try prepare(store, f.first.id)
+            let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+            let store = try f.open(), clock = ReminderDeliveryFixture(); try prepare(store, f.first.id)
             var source = try #require(store.source(for: f.first.id))
             source.reminderDelivery = ReminderDelivery(id: "uncertain", sourceID: source.id,
                 reasons: [ReminderReason(kind: .low)], attemptedAt: clock.date, status: .pending)
@@ -138,8 +115,8 @@ struct ReminderDeliveryTests {
     }
 
     @Test func simultaneousCoordinatorsSubmitOnce() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), clock = Clock(); try prepare(store, f.first.id)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture(); try prepare(store, f.first.id)
         var suspended: CheckedContinuation<Void, Never>?
         clock.onSend = { await withCheckedContinuation { suspended = $0 } }
         let a = ReminderCoordinator(repository: store, services: clock.services)
@@ -153,8 +130,8 @@ struct ReminderDeliveryTests {
     }
 
     @Test func staleRepositoryCannotResubmitAcceptedRisk() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), clock = Clock(); try prepare(store, f.first.id)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture(); try prepare(store, f.first.id)
         let stale = try f.open()
         let a = ReminderCoordinator(repository: store, services: clock.services)
         let b = ReminderCoordinator(repository: stale, services: clock.services)
@@ -164,8 +141,8 @@ struct ReminderDeliveryTests {
     }
 
     @Test func migrationMarkerSurvivesLegacyLedgerFlagReset() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), clock = Clock()
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture()
         var source = try #require(store.source(for: f.first.id))
         source.reminderPreferences = ReminderPreferences(forecastEnabled: false, expiryEnabled: false)
         source.reminderState = nil; source.ledger.lowBalanceNotified = false
@@ -178,8 +155,8 @@ struct ReminderDeliveryTests {
     }
 
     @Test func pauseDuringAuthorizationPreventsSending() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), clock = Clock(); try prepare(store, f.first.id)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture(); try prepare(store, f.first.id)
         clock.onAuthorization = {
             var catalog = store.snapshot.catalog; catalog.profiles[0].enabled = false
             try! store.updateCatalog(catalog)
@@ -190,8 +167,8 @@ struct ReminderDeliveryTests {
     }
 
     @Test(arguments: [false, true]) func offOnWhileAuthorizationWaitsRestartsForecastConfirmation(pause: Bool) async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), clock = Clock(); try prepare(store, f.first.id)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture(); try prepare(store, f.first.id)
         var source = try #require(store.source(for: f.first.id))
         source.reminderPreferences = ReminderPreferences(lowEnabled: false, forecastEnabled: true, expiryEnabled: false)
         try store.updateSource(source)
@@ -222,8 +199,8 @@ struct ReminderDeliveryTests {
     }
 
     @Test func sourceReplacementDuringAuthorizationPreventsOldRiskDelivery() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), clock = Clock(); try prepare(store, f.first.id)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture(); try prepare(store, f.first.id)
         clock.onAuthorization = { _ = try! f.change(store, mode: .newSource) }
         let coordinator = ReminderCoordinator(repository: store, services: clock.services)
         #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { clock.input }) == .idle)
@@ -231,8 +208,8 @@ struct ReminderDeliveryTests {
     }
 
     @Test func acceptedWhilePausedStillDeduplicatesOnResume() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), clock = Clock(); try prepare(store, f.first.id)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture(); try prepare(store, f.first.id)
         clock.onSend = {
             var catalog = store.snapshot.catalog; catalog.profiles[0].enabled = false
             try! store.updateCatalog(catalog)
@@ -246,8 +223,8 @@ struct ReminderDeliveryTests {
     }
 
     @Test func lateAcceptanceCannotMarkNewSource() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
-        let store = try f.open(), clock = Clock(); try prepare(store, f.first.id)
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture(); try prepare(store, f.first.id)
         let old = try #require(store.source(for: f.first.id))
         clock.onSend = { _ = try! f.change(store, mode: .newSource) }
         let coordinator = ReminderCoordinator(repository: store, services: clock.services)

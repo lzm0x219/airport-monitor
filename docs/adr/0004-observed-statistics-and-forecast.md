@@ -5,7 +5,7 @@ Status: implemented-candidate
 
 对应当时的原生统计任务。原始Ledger、配置及迁移格式保持，该轮未部署或操作真实用户数据。
 
-2026-10-27 后主窗口另用采样后预测，通知仍使用本决策的连续预测资格；现行展示口径见[使用说明](../../USAGE.md#用量统计与预测)。下文保留该决策作出时的背景。
+2026-10-27 后主窗口另用采样后预测，通知仍使用本决策的连续预测资格；现行展示口径见[使用说明](../USAGE.md#用量统计与预测)。下文保留该决策作出时的背景。
 
 ## 统一来源
 
@@ -35,4 +35,4 @@ Status: implemented-candidate
 
 旧UsageSummary及ForecastReason保留供既有调用；新界面应消费UsageReport的可选bytes、unallocated／partial／excluded，以及ForecastDiagnostic，不把兼容字段0或泛化reason当成完整含义。ForecastEstimate.coverage仅是兼容字段，不代表概率或置信度。
 
-主页面预测文案随规则同步；状态栏的额度呈现、共享风险色和重置展示保持独立。现行界面和验证范围分别见[设计规范](../../DESIGN.md)与[验证记录](../../VALIDATION.md)。
+主页面预测文案随规则同步；状态栏的额度呈现、共享风险色和重置展示保持独立。现行界面和验证范围分别见[设计规范](../../DESIGN.md)与[验证记录](../VALIDATION.md)。

@@ -6,7 +6,7 @@ import TrafficCore
 @Suite @MainActor
 struct SamplingForecastModelTests {
     @Test func snapshotSurvivesClockFailureAndRestartButUpdatesOnNewReading() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let store = try f.open()
         let start = ISO8601DateFormatter().date(from: "2026-10-02T00:00:00Z")!
         var rule = ResetRule(); rule.kind = .monthly; rule.day = 1; rule.timeZoneID = "UTC"

@@ -20,7 +20,7 @@ struct StatisticsIntegrationTests {
         return result
     }
 
-    private func open(_ f: NativeRepositoryTests.Fixture, _ clock: Clock) throws -> NativeRepository {
+    private func open(_ f: NativeRepositoryFixture, _ clock: Clock) throws -> NativeRepository {
         var services = f.vault.services
         services.now = { clock.date }
         return try NativeRepository(root: f.root, defaults: f.defaults, services: services)
@@ -39,7 +39,7 @@ struct StatisticsIntegrationTests {
         try store.updateSource(source)
     }
 
-    private func model(_ f: NativeRepositoryTests.Fixture, _ store: NativeRepository, _ clock: Clock,
+    private func model(_ f: NativeRepositoryFixture, _ store: NativeRepository, _ clock: Clock,
                        fetch: ((URL) async throws -> TrafficCore.Subscription)? = nil) -> MonitorModel {
         var services = f.vault.services
         services.now = { clock.date }
@@ -51,7 +51,7 @@ struct StatisticsIntegrationTests {
     }
 
     @Test func migratedReportsRebuildWithoutWritingOrChangingIntervalIdentity() throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let clock = Clock(reference), store = try open(f, clock), m = model(f, store, clock)
         defer { m.stop() }
         let stateBytes = try Data(contentsOf: store.stateURL)
@@ -75,7 +75,7 @@ struct StatisticsIntegrationTests {
     }
 
     @Test func changedRuleRevisionsInvalidateCachedDailyObservations() throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let clock = Clock(reference), store = try open(f, clock)
         try store.setStatisticsTimeZone("UTC")
         try seed(store, f.first.id, at: clock.date, hours: [-3, -2, -1, 0])
@@ -94,7 +94,7 @@ struct StatisticsIntegrationTests {
     }
 
     @Test func sameSourceReplacementRetainsStatisticsButWaitsForVerification() throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let clock = Clock(reference), store = try open(f, clock)
         try seed(store, f.first.id, at: clock.date)
         let m = model(f, store, clock); defer { m.stop() }
@@ -115,7 +115,7 @@ struct StatisticsIntegrationTests {
     }
 
     @Test func newSourceDoesNotBorrowOldStatisticsOrForecast() throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let clock = Clock(reference), store = try open(f, clock)
         try seed(store, f.first.id, at: clock.date)
         let m = model(f, store, clock); defer { m.stop() }
@@ -141,10 +141,10 @@ struct StatisticsIntegrationTests {
     }
 
     @Test func pausedBusyFailedAndStaleReadingsCannotProduceCurrentPrediction() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let clock = Clock(reference), store = try open(f, clock)
         try seed(store, f.first.id, at: clock.date)
-        let transport = MonitorLifecycleTests.Transport()
+        let transport = UncooperativeTransport()
         let m = model(f, store, clock, fetch: { try await transport.fetch($0) }); defer { m.stop() }
         #expect(m.forecastResult.estimate != nil)
         m.setLifecycle(enabled: false, archived: false)
@@ -166,7 +166,7 @@ struct StatisticsIntegrationTests {
     }
 
     @Test func pausedManualReadKeepsValidHistoryWithoutEnablingPrediction() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let clock = Clock(reference), store = try open(f, clock)
         try seed(store, f.first.id, at: clock.date)
         var catalog = store.snapshot.catalog; catalog.profiles[0].enabled = false
@@ -184,7 +184,7 @@ struct StatisticsIntegrationTests {
     }
 
     @Test func restoreFailureThenRetryRecordsCrossDayIncrementExactlyOnce() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let clock = Clock(reference), store = try open(f, clock)
         try seed(store, f.first.id, at: clock.date, hours: [-72, -48])
         var catalog = store.snapshot.catalog
@@ -217,7 +217,7 @@ struct StatisticsIntegrationTests {
     }
 
     @Test func restoreAcrossKnownResetPreservesReadingsWithoutInventingUsage() async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let clock = Clock(reference), store = try open(f, clock)
         try seed(store, f.first.id, at: clock.date, hours: [-72, -48])
         var source = try #require(store.source(for: f.first.id)), reset = ResetRule()
@@ -242,7 +242,7 @@ struct StatisticsIntegrationTests {
     }
 
     @Test func persistedStatisticsTimeZoneControlsDayAllocationAcrossRestart() throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let clock = Clock(reference), initial = try open(f, clock)
         var snapshot = initial.snapshot
         snapshot.statisticsTimeZone = "America/New_York"
@@ -270,7 +270,7 @@ struct StatisticsIntegrationTests {
     }
 
     @Test func laterResetRevisionDoesNotReinterpretEarlierUsage() throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let clock = Clock(reference), store = try open(f, clock)
         try seed(store, f.first.id, at: clock.date)
         let m = model(f, store, clock); defer { m.stop() }
@@ -291,7 +291,7 @@ struct StatisticsIntegrationTests {
 
     @Test(arguments: [false, true])
     func ruleEditAtLatestReadingKeepsCompletedHistoryAndWaitsForNewRead(savePreferences: Bool) async throws {
-        let f = try NativeRepositoryTests.Fixture(); defer { f.cleanup() }
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
         let clock = Clock(reference), store = try open(f, clock)
         try seed(store, f.first.id, at: clock.date)
         let m = model(f, store, clock); defer { m.stop() }

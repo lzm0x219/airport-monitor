@@ -3,7 +3,7 @@
 Date: 2026-10-23
 Status: implemented-candidate
 
-本决策记录提醒规则与投递边界。现行使用方式见[使用说明](../../USAGE.md#提醒)，验证范围见[验证记录](../../VALIDATION.md)。
+本决策记录提醒规则与投递边界。现行使用方式见[使用说明](../USAGE.md#提醒)，验证范围见[验证记录](../VALIDATION.md)。
 
 ## 身份与配置
 
