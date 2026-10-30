@@ -44,30 +44,136 @@ jobs:
       - name: Run request gate tests
         run: swift test --scratch-path "$RUNNER_TEMP/airport-monitor-tests" --skip-build --no-parallel --filter RequestGateConcurrencyTests
 
-      - name: Build universal app
+      - name: Prepare isolated update test key
+        if: github.event_name != 'push' || github.ref_type != 'tag'
         run: |
-          xcodebuild -project AirportMonitor.xcodeproj \
-            -scheme AirportMonitor -configuration Release \
-            -derivedDataPath "$RUNNER_TEMP/airport-monitor-build" \
-            'ARCHS=arm64 x86_64' ONLY_ACTIVE_ARCH=NO build
+          umask 077
+          openssl rand -base64 32 > "$RUNNER_TEMP/airport-monitor-test-update-key"
+          public_key=$(swift tools/release/update-public-key.swift < "$RUNNER_TEMP/airport-monitor-test-update-key")
+          echo "AIRPORT_TEST_PUBLIC_KEY=$public_key" >> "$GITHUB_ENV"
+
+      - name: Configure release signing
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: tools/release/setup-signing.sh
+
+      - name: Build universal app
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [[ "$EVENT_NAME" == push && "$REF_TYPE" == tag ]]; then
+            xcodebuild -project AirportMonitor.xcodeproj -scheme AirportMonitor -configuration Release \
+              -derivedDataPath "$RUNNER_TEMP/airport-monitor-build" \
+              -clonedSourcePackagesDirPath "$RUNNER_TEMP/airport-monitor-packages" \
+              CODE_SIGN_STYLE=Manual "CODE_SIGN_IDENTITY=$AIRPORT_SIGNING_IDENTITY" \
+              "OTHER_CODE_SIGN_FLAGS=--keychain $AIRPORT_SIGNING_KEYCHAIN" \
+              'ARCHS=arm64 x86_64' ONLY_ACTIVE_ARCH=NO build
+          else
+            xcodebuild -project AirportMonitor.xcodeproj -scheme AirportMonitor -configuration Debug \
+              -derivedDataPath "$RUNNER_TEMP/airport-monitor-build" \
+              -clonedSourcePackagesDirPath "$RUNNER_TEMP/airport-monitor-packages" \
+              "SPARKLE_PUBLIC_KEY=$AIRPORT_TEST_PUBLIC_KEY" 'ARCHS=arm64 x86_64' ONLY_ACTIVE_ARCH=NO build
+          fi
+
+      - name: Verify update continuity
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: tools/release/verify-previous-release.sh "$RELEASE_TAG" "$RUNNER_TEMP/airport-monitor-packages/artifacts/sparkle/Sparkle/bin"
+
+      - name: Sign and notarize release app
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          app="$RUNNER_TEMP/airport-monitor-build/Build/Products/Release/Airport Monitor.app"
+          tools/release/resign-sparkle.sh "$app" "$AIRPORT_SIGNING_IDENTITY" "$AIRPORT_SIGNING_KEYCHAIN"
+          tools/release/notarize-app.sh "$app" "$AIRPORT_NOTARY_KEY_PATH" "$APPLE_NOTARY_KEY_ID" "$APPLE_NOTARY_ISSUER_ID"
 
       - name: Package and verify app
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          app="$RUNNER_TEMP/airport-monitor-build/Build/Products/Release/Airport Monitor.app"
+          if [[ "$EVENT_NAME" == push && "$REF_TYPE" == tag ]]; then
+            configuration=Release
+          else
+            configuration=Debug
+            export AIRPORT_TEST_PACKAGE=1
+          fi
+          app="$RUNNER_TEMP/airport-monitor-build/Build/Products/$configuration/Airport Monitor.app"
           version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
           tag="v$version"
-          if [[ "$REF_TYPE" == tag ]]; then
+          if [[ "$EVENT_NAME" == push && "$REF_TYPE" == tag ]]; then
             tag="$REF_NAME"
           fi
           tools/release/package.sh "$app" "$tag" "$RUNNER_TEMP/airport-monitor-release"
 
-      - name: Save build artifacts
+      - name: Verify update feed with an isolated key
+        if: github.event_name != 'push' || github.ref_type != 'tag'
+        run: |
+          app="$RUNNER_TEMP/airport-monitor-build/Build/Products/Debug/Airport Monitor.app"
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
+          tag="v$version"
+          notes="$RUNNER_TEMP/airport-monitor-test-notes.md"
+          printf 'Isolated update verification.\n' > "$notes"
+          export SPARKLE_PRIVATE_KEY
+          SPARKLE_PRIVATE_KEY=$(cat "$RUNNER_TEMP/airport-monitor-test-update-key")
+          tools/release/prepare-appcast.sh "$app" "$RUNNER_TEMP/airport-monitor-release/Airport-Monitor-$tag-macOS-universal.zip" \
+            "$tag" "$notes" "$RUNNER_TEMP/airport-monitor-release" "$RUNNER_TEMP/airport-monitor-packages/artifacts/sparkle/Sparkle/bin"
+
+      - name: Verify invalid update signatures are rejected
+        if: github.event_name != 'push' || github.ref_type != 'tag'
+        run: |
+          app="$RUNNER_TEMP/airport-monitor-build/Build/Products/Debug/Airport Monitor.app"
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
+          tools/release/test-appcast.sh "$app" "$RUNNER_TEMP/airport-monitor-release/Airport-Monitor-v$version-macOS-universal.zip" \
+            "$RUNNER_TEMP/airport-monitor-test-notes.md" "$RUNNER_TEMP/airport-monitor-packages/artifacts/sparkle/Sparkle/bin" \
+            "$RUNNER_TEMP/airport-monitor-test-update-key"
+
+      - name: Verify release guards
+        if: github.event_name != 'push' || github.ref_type != 'tag'
+        run: |
+          tools/release/test-release-guards.sh "$RUNNER_TEMP/airport-monitor-test-update-key" \
+            "$RUNNER_TEMP/airport-monitor-packages/artifacts/sparkle/Sparkle/bin" \
+            "$RUNNER_TEMP/airport-monitor-release/appcast.xml"
+
+      - name: Prepare signed update feed
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          app="$RUNNER_TEMP/airport-monitor-build/Build/Products/Release/Airport Monitor.app"
+          tools/release/prepare-appcast.sh "$app" "$RUNNER_TEMP/airport-monitor-release/Airport-Monitor-$RELEASE_TAG-macOS-universal.zip" \
+            "$RELEASE_TAG" "$RUNNER_TEMP/airport-monitor-release/release-notes.md" "$RUNNER_TEMP/airport-monitor-release" \
+            "$RUNNER_TEMP/airport-monitor-packages/artifacts/sparkle/Sparkle/bin"
+
+      - name: Save release artifacts
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: airport-monitor-build
+          path: ${{ runner.temp }}/airport-monitor-release/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Save validation-only artifacts
+        if: github.event_name != 'push' || github.ref_type != 'tag'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: airport-monitor-validation-only
           path: ${{ runner.temp }}/airport-monitor-release/
           if-no-files-found: error
           retention-days: 14
@@ -95,7 +201,7 @@ jobs:
         run: |
           cd release
           sha256sum -c SHA256SUMS.txt
-          gh release create "$RELEASE_TAG" ./*.zip SHA256SUMS.txt \
+          gh release create "$RELEASE_TAG" ./*.zip SHA256SUMS.txt appcast.xml \
             --verify-tag --draft \
             --title "Airport Monitor $RELEASE_TAG" \
             --notes-file release-notes.md

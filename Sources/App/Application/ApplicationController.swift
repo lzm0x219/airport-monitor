@@ -5,14 +5,20 @@ import SwiftUI
 final class ApplicationController: NSObject, NSApplicationDelegate, NSToolbarDelegate {
     private var workspace: AirportWorkspace!
     private let workspaceToolbarState = WorkspaceToolbarState()
+    private let updater = AppUpdater()
     private var status: StatusController!
     private var settingsWindow: NSWindow?
     private var reopenAfterLaunch = false
     func applicationDidFinishLaunching(_ notification: Notification) {
         let demo = CommandLine.arguments.contains("--design-demo")
+        #if UPDATE_TESTING
+        let updateTest = true
+        #else
+        let updateTest = false
+        #endif
         if demo && CommandLine.arguments.contains("--light") { NSApp.appearance = NSAppearance(named: .aqua) }
         if demo && CommandLine.arguments.contains("--dark") { NSApp.appearance = NSAppearance(named: .darkAqua) }
-        if CommandLine.arguments.contains("--workspace-review") {
+        if CommandLine.arguments.contains("--workspace-review") || updateTest {
             do { workspace = try WorkspaceReviewSupport.make() }
             catch { print("Isolated workspace unavailable: \(error)"); NSApp.terminate(nil); return }
         } else { workspace = AirportWorkspace(demo: demo) }
@@ -32,6 +38,7 @@ final class ApplicationController: NSObject, NSApplicationDelegate, NSToolbarDel
             NSApp.terminate(nil)
             return
         }
+        if !demo && (!workspace.isIsolatedReview || updateTest) { updater.start() }
         status = StatusController(workspace: workspace, openMain: { [weak self] in self?.showMain() }, openSettings: { [weak self] in self?.showSettings() })
         makeMenu()
         if reopenAfterLaunch { reopenAfterLaunch = false; requestReopen() }
@@ -68,7 +75,7 @@ final class ApplicationController: NSObject, NSApplicationDelegate, NSToolbarDel
             window.title = workspace.isIsolatedReview ? "Airport Monitor · 隔离交互验证" : workspace.isDemo ? "Airport Monitor · 设计预览" : "Airport Monitor"
             window.contentMinSize = NSSize(width: 680, height: 548)
             window.isReleasedWhenClosed = false
-            window.contentViewController = NSHostingController(rootView: WorkspaceView(workspace: workspace, toolbarState: workspaceToolbarState))
+            window.contentViewController = NSHostingController(rootView: WorkspaceView(workspace: workspace, toolbarState: workspaceToolbarState, updater: updater))
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.titlebarSeparatorStyle = .none

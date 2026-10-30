@@ -9,7 +9,7 @@ let package = Package(
         .target(name: "TrafficCore", path: "Sources/Core"),
         .target(name: "NativeModels", dependencies: ["TrafficCore"], path: "Sources/App",
                 exclude: [
-                    "Application/AirportMonitorApp.swift", "Application/ApplicationController.swift",
+                    "Application/AirportMonitorApp.swift", "Application/ApplicationController.swift", "Application/AppUpdater.swift",
                     "MenuBar/StatusLogoFeedback.swift", "MenuBar/OwlLogoGeometry.swift", "MenuBar/OwlTouchResponse.swift",
                     "MenuBar/PanelPlacement.swift", "MenuBar/QuotaPanel.swift", "MenuBar/StatusController.swift",
                     "Presentation/NativeDesign.swift", "Presentation/WorkspaceControls.swift",

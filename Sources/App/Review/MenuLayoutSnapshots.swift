@@ -29,7 +29,7 @@ enum MenuLayoutSnapshots {
                     report.append(["file": file, "width": String(Int(size.width)), "height": String(Int(size.height)), "layout": layout.rawValue])
                 }
                 workspace.page = .settings
-                _ = try capture(SettingsView(workspace: workspace, state: .constant(SettingsPageState())).background(Magpie.background), width: 760, height: 660,
+                _ = try capture(SettingsView(workspace: workspace, state: .constant(SettingsPageState()), updater: AppUpdater()).background(Magpie.background), width: 760, height: 660,
                                 to: directory.appendingPathComponent("settings-\(layout.rawValue)-\(dark ? "dark" : "light").png"))
             }
         }
@@ -46,7 +46,7 @@ enum MenuLayoutSnapshots {
             for section in SettingsSection.allCases {
                 let state = SettingsPageState(section: section, restoredSelection: true)
                 let file = "settings-\(section.rawValue)-\(dark ? "dark" : "light").png"
-                let size = try capture(SettingsView(workspace: workspace, state: .constant(state)).background(Magpie.background),
+                let size = try capture(SettingsView(workspace: workspace, state: .constant(state), updater: AppUpdater()).background(Magpie.background),
                                        width: 680, height: 474, to: directory.appendingPathComponent(file))
                 report.append(["file": file, "width": String(Int(size.width)), "height": String(Int(size.height)), "section": section.rawValue])
             }

@@ -5,6 +5,7 @@ import ServiceManagement
 struct SettingsView: View {
     @ObservedObject var workspace: AirportWorkspace
     @Binding var state: SettingsPageState
+    @ObservedObject var updater: AppUpdater
     @State private var login = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
     @State private var timeZoneError: String?
@@ -209,7 +210,7 @@ struct SettingsView: View {
             }
         }
     }
-    private var aboutPage: some View {
+    @ViewBuilder private var aboutPage: some View {
         group("关于") {
             HStack(alignment: .top, spacing: 12) {
                 Image("MenuBarIcon").renderingMode(.template).resizable().frame(width: 32, height: 32).accessibilityHidden(true)
@@ -217,6 +218,22 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }.padding(.vertical, 12)
+        }
+        group("软件更新") {
+            setting("自动检查更新", detail: updater.isConfigured ? "定期检查新版本；更新下载后可选择何时重启。" : "当前版本无法检查更新。", separator: true) {
+                Toggle("自动检查更新", isOn: Binding(get: { updater.automaticallyChecks }, set: updater.setAutomaticallyChecks))
+                    .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                    .disabled(!updater.isConfigured).accessibilityLabel("自动检查更新")
+            }
+            setting("检查更新") {
+                HStack(spacing: 8) {
+                    if updater.restartAvailable {
+                        Button("重新启动并更新") { updater.restartToInstall() }.buttonStyle(WorkspaceButton())
+                    }
+                    Button("检查更新") { updater.checkNow() }.buttonStyle(WorkspaceButton(quiet: true))
+                        .disabled(!updater.canCheck)
+                }
+            }
         }
     }
 
@@ -303,11 +320,12 @@ private enum SettingsExplanation {
     var text: String {
         switch self {
         case .privacy:
-            return "订阅链接只保存在本机钥匙串，不写入本地记录或错误输出。\n\n各机场独立保存订阅与本地数据；移除可以恢复。更新同一来源的链接保留历史，明确更换数据来源才建立独立记录，旧记录仍保留。\n\n余量来自服务端的总额、上传和下载计数，可能包含多设备消耗与服务商倍率，不等于本机网速。总额未知时不推断余量或百分比。\n\n统计从添加后积累，缺失日期不补造；预测为估计。同步失败保留最后成功读数。没有分析服务、遥测或云同步。"
+            return "订阅链接只保存在本机钥匙串，不写入本地记录或错误输出。\n\n各机场独立保存订阅与本地数据；移除可以恢复。更新同一来源的链接保留历史，明确更换数据来源才建立独立记录，旧记录仍保留。\n\n余量来自服务端的总额、上传和下载计数，可能包含多设备消耗与服务商倍率，不等于本机网速。总额未知时不推断余量或百分比。\n\n统计从添加后积累，缺失日期不补造；预测为估计。同步失败保留最后成功读数。检查软件更新时会连接 GitHub，不发送订阅链接。没有分析服务、遥测或云同步。"
         case .about:
             let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "开发版"
             let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "本机构建"
-            return "Airport Monitor\n版本 \(version) · \(build)\n\n在菜单栏随时查看机场余量，在主窗口回顾用量与预测。多个机场独立管理，不合并不同套餐额度。"
+            let versionLine = build == version ? "版本 \(version)" : "版本 \(version) · \(build)"
+            return "Airport Monitor\n\(versionLine)\n\n在菜单栏随时查看机场余量，在主窗口回顾用量与预测。多个机场独立管理，不合并不同套餐额度。"
         }
     }
 }

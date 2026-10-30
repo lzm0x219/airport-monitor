@@ -1,16 +1,22 @@
 # Airport Monitor 使用与数据说明
 
-本文说明安装、日常操作、数据口径和故障恢复。[返回项目首页](../README.md)。当前源码版本为 1.0.0（build 1）。应用沿用原内部 Bundle Identifier 和存储目录。
+本文说明安装、日常操作、数据口径和故障恢复。[返回项目首页](../README.md)。当前源码版本为 1.0.0。应用沿用原内部 Bundle Identifier 和存储目录。
 
 ## 从发布版本安装或更新
 
 1. 从 [GitHub Releases](https://github.com/lzm0x219/airport-monitor/releases) 下载 ZIP 并解压。
 2. 如果已有 Airport Monitor，先退出正在运行的应用。在访达中将下载版复制到「应用程序」文件夹；更新时请复制到旧版所在文件夹，并在提示时选择「替换」。关闭主窗口不会退出应用。
-3. 打开应用。当前发布包未使用 Apple Developer ID 签名，也未经过 Apple 公证，macOS 可能提示无法验证。如果已确认下载来源可信且文件未被篡改，仍选择打开，可在「系统设置 → 隐私与安全性」中选择「仍要打开」，再按系统提示完成验证和确认。详见 [Apple 的说明](https://support.apple.com/zh-cn/102445)。
+3. 从「应用程序」文件夹打开应用。`v1.0.0` 草稿中的下载包未使用 Apple Developer ID 签名，也未经过 Apple 公证，macOS 可能提示无法验证。如果已确认下载来源可信且文件未被篡改，仍选择打开，可在「系统设置 → 隐私与安全性」中选择「仍要打开」，再按系统提示完成验证和确认。详见 [Apple 的说明](https://support.apple.com/zh-cn/102445)。
 
-如需核对下载，将发布附件中的 ZIP 和 `SHA256SUMS.txt` 放在同一目录，在该目录执行 `shasum -a 256 -c SHA256SUMS.txt`。
+如需核对下载，将发布附件中的 ZIP、`SHA256SUMS.txt` 和校验文件列出的其他附件放在同一目录，在该目录执行 `shasum -a 256 -c SHA256SUMS.txt`。
 
-在一台 Apple Silicon Mac 上，从本地构建的 1.0.0 覆盖为下载版后，原有数据和设置保持一致，订阅仍显示已保存。不同版本间的升级、无数据的全新安装、真实联网刷新、登录启动、重启后体验及 Intel 实机尚未验证；更新后钥匙串可能要求重新授权。具体范围见[验证记录](VALIDATION.md)。
+在一台 Apple Silicon Mac 上，从本地构建的 1.0.0 覆盖为下载版后，原有数据和设置保持一致，订阅仍显示已保存。跨版本更新已在隔离测试版中验证，正式发布版、无数据的全新安装、真实联网刷新、登录启动、系统重启后体验及 Intel 实机尚未验证；更新后钥匙串可能要求重新授权。具体范围见[验证记录](VALIDATION.md)。
+
+## 应用内更新
+
+支持应用内更新的版本默认定期检查已发布的稳定版；下载并验证更新后会提示重启，也可在设置的「关于」中稍后重启。选择稍后后，退出应用时也可能安装已下载的更新。可在「关于」关闭自动检查或手动检查更新。
+
+检查更新会连接 GitHub 及其下载服务，不发送订阅链接。旧的 `v1.0.0` 下载包没有更新器，需要先按上面的步骤手动安装包含更新功能的新版本。请将应用复制到「应用程序」后从那里打开；直接从下载目录运行或处于系统隔离运行状态时，可能无法自动更新。如果设置中显示当前版本无法检查更新，也可通过 Release 页面手动更新。
 
 ## 运行
 
@@ -24,16 +30,16 @@
 
 ## 用 Xcode 打开编译
 
-建议使用 Xcode 26 或更新版本，打开 `AirportMonitor.xcodeproj`，选择共享 scheme **AirportMonitor** 和 **My Mac**，按 ⌘R。也可在项目根目录通过终端构建 Apple Silicon 与 Intel 的 Release 版本：
+建议使用 Xcode 26 或更新版本，打开 `AirportMonitor.xcodeproj`，选择共享 scheme **AirportMonitor** 和 **My Mac**，按 ⌘R。也可在项目根目录通过终端构建 Apple Silicon 与 Intel 的调试版本：
 
 ```sh
 xcodebuild -project AirportMonitor.xcodeproj \
-  -scheme AirportMonitor -configuration Release \
+  -scheme AirportMonitor -configuration Debug \
   -derivedDataPath /tmp/AirportMonitorBuild \
   'ARCHS=arm64 x86_64' ONLY_ACTIVE_ARCH=NO build
 ```
 
-产物位于 `/tmp/AirportMonitorBuild/Build/Products/Release/Airport Monitor.app`。工程默认使用本机 ad-hoc 签名，未做 Developer ID 签名和 Apple 公证；重新签名或更改 Bundle Identifier 后，钥匙串可能要求重新授权。若 Documents 或 iCloud 目录触发 `resource fork ... not allowed` 签名错误，可使用上述 `/tmp` 构建目录。
+产物位于 `/tmp/AirportMonitorBuild/Build/Products/Debug/Airport Monitor.app`。调试构建使用本机 ad-hoc 签名，并仅为加载更新框架关闭库验证，不应对外分发；未配置更新公钥时不会检查更新。正式发布的签名、公证与更新密钥配置见[构建与发布](release.md)。重新签名或更改 Bundle Identifier 后，钥匙串可能要求重新授权。若 Documents 或 iCloud 目录触发 `resource fork ... not allowed` 签名错误，可使用上述 `/tmp` 构建目录。
 
 运行核心逻辑、原生模型和模拟网络测试：
 
@@ -69,7 +75,7 @@ swift test --scratch-path /tmp/AirportMonitorTests
 ## 隐私、存储与故障恢复
 
 - 订阅链接保存在本机登录钥匙串，不写入偏好、历史或日志。机场配置、读数和提醒状态保存在本机；历史为明文，备份时请注意隐私。
-- 请求发往所填订阅地址及其 HTTPS 重定向目标，最多跟随 5 次重定向，不降级到 HTTP。应用读取响应头后取消正文下载，不解析或保存节点；网络栈仍可能接收少量已在途正文。没有分析服务、远程遥测或 iCloud 同步。
+- 订阅读取发往所填地址及其 HTTPS 重定向目标，最多跟随 5 次重定向，不降级到 HTTP。应用读取响应头后取消正文下载，不解析或保存节点；网络栈仍可能接收少量已在途正文。软件更新会连接 GitHub 及其下载服务，不发送订阅链接。没有分析服务、远程遥测或 iCloud 同步。
 - 沙盒数据通常位于 `~/Library/Containers/local.SurgeTrafficMonitor/Data/Library/Application Support/SurgeTrafficMonitor/`。`native-v2/state.json` 保存目录、来源和历史，不保存订阅链接；全局显示、同步和通知偏好保存在 UserDefaults。
 - 损坏或不兼容的历史不会静默覆盖，应用会暂停相关采样。设置的「数据与隐私」中可隔离损坏文件并重新开始，原文件保留为 `.corrupt` 副本；写盘失败时不会把未落盘的读数当成成功。
 - 旧来源历史保留，归档不会删除钥匙串条目或注销远端订阅。当前不自动裁剪历史，也没有 CSV 导出；可在主窗口查看来源历史。

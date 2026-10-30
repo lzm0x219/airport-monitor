@@ -9,6 +9,7 @@ struct SettingsPageState {
 struct WorkspaceView: View {
     @ObservedObject var workspace: AirportWorkspace
     @ObservedObject var toolbarState: WorkspaceToolbarState
+    @ObservedObject var updater: AppUpdater
     @State private var showArchive = false
     @State private var editorSession: AirportEditingSession?
     @State private var presentedEditor: AirportEditingSession?
@@ -34,7 +35,7 @@ struct WorkspaceView: View {
                     .allowsHitTesting(workspace.page == .airports).disabled(workspace.page != .airports)
                     .accessibilityHidden(workspace.page != .airports)
                 if workspace.page == .settings {
-                    SettingsView(workspace: workspace, state: $settingsState)
+                    SettingsView(workspace: workspace, state: $settingsState, updater: updater)
                 }
             }.frame(maxWidth: 960).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             if workspace.isDemo || workspace.isIsolatedReview {
