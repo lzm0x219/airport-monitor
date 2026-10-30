@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+env:
+  RELEASE_SIGNING_MODE: ${{ vars.AIRPORT_RELEASE_SIGNING || 'adhoc' }}
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
@@ -52,8 +55,16 @@ jobs:
           public_key=$(swift tools/release/update-public-key.swift < "$RUNNER_TEMP/airport-monitor-test-update-key")
           echo "AIRPORT_TEST_PUBLIC_KEY=$public_key" >> "$GITHUB_ENV"
 
-      - name: Configure release signing
+      - name: Validate release signing mode
         if: github.event_name == 'push' && github.ref_type == 'tag'
+        run: |
+          case "$RELEASE_SIGNING_MODE" in
+            adhoc|developer-id) ;;
+            *) echo 'Invalid AIRPORT_RELEASE_SIGNING repository variable.' >&2; exit 1 ;;
+          esac
+
+      - name: Configure Developer ID signing
+        if: github.event_name == 'push' && github.ref_type == 'tag' && env.RELEASE_SIGNING_MODE == 'developer-id'
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -68,19 +79,17 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [[ "$EVENT_NAME" == push && "$REF_TYPE" == tag ]]; then
-            xcodebuild -project AirportMonitor.xcodeproj -scheme AirportMonitor -configuration Release \
-              -derivedDataPath "$RUNNER_TEMP/airport-monitor-build" \
-              -clonedSourcePackagesDirPath "$RUNNER_TEMP/airport-monitor-packages" \
-              CODE_SIGN_STYLE=Manual "CODE_SIGN_IDENTITY=$AIRPORT_SIGNING_IDENTITY" \
-              "OTHER_CODE_SIGN_FLAGS=--keychain $AIRPORT_SIGNING_KEYCHAIN" \
-              'ARCHS=arm64 x86_64' ONLY_ACTIVE_ARCH=NO build
-          else
-            xcodebuild -project AirportMonitor.xcodeproj -scheme AirportMonitor -configuration Debug \
-              -derivedDataPath "$RUNNER_TEMP/airport-monitor-build" \
-              -clonedSourcePackagesDirPath "$RUNNER_TEMP/airport-monitor-packages" \
-              "SPARKLE_PUBLIC_KEY=$AIRPORT_TEST_PUBLIC_KEY" 'ARCHS=arm64 x86_64' ONLY_ACTIVE_ARCH=NO build
+          options=('AIRPORT_RELEASE_SIGNING=adhoc' 'CODE_SIGN_IDENTITY=-' 'CODE_SIGN_ENTITLEMENTS=AirportMonitor.AdHoc.entitlements')
+          if [[ "$EVENT_NAME" == push && "$REF_TYPE" == tag && "$RELEASE_SIGNING_MODE" == developer-id ]]; then
+            options=('AIRPORT_RELEASE_SIGNING=developer-id' "CODE_SIGN_IDENTITY=$AIRPORT_SIGNING_IDENTITY" \
+              'CODE_SIGN_ENTITLEMENTS=AirportMonitor.entitlements' "OTHER_CODE_SIGN_FLAGS=--keychain $AIRPORT_SIGNING_KEYCHAIN")
+          elif [[ "$EVENT_NAME" != push || "$REF_TYPE" != tag ]]; then
+            options+=("SPARKLE_PUBLIC_KEY=$AIRPORT_TEST_PUBLIC_KEY")
           fi
+          xcodebuild -project AirportMonitor.xcodeproj -scheme AirportMonitor -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/airport-monitor-build" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/airport-monitor-packages" \
+            CODE_SIGN_STYLE=Manual "${options[@]}" 'ARCHS=arm64 x86_64' ONLY_ACTIVE_ARCH=NO build
 
       - name: Verify update continuity
         if: github.event_name == 'push' && github.ref_type == 'tag'
@@ -91,7 +100,7 @@ jobs:
         run: tools/release/verify-previous-release.sh "$RELEASE_TAG" "$RUNNER_TEMP/airport-monitor-packages/artifacts/sparkle/Sparkle/bin"
 
       - name: Sign and notarize release app
-        if: github.event_name == 'push' && github.ref_type == 'tag'
+        if: github.event_name == 'push' && github.ref_type == 'tag' && env.RELEASE_SIGNING_MODE == 'developer-id'
         env:
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
@@ -107,12 +116,11 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           if [[ "$EVENT_NAME" == push && "$REF_TYPE" == tag ]]; then
-            configuration=Release
+            export AIRPORT_RELEASE_SIGNING="$RELEASE_SIGNING_MODE"
           else
-            configuration=Debug
-            export AIRPORT_TEST_PACKAGE=1
+            export AIRPORT_RELEASE_SIGNING=adhoc AIRPORT_TEST_PACKAGE=1
           fi
-          app="$RUNNER_TEMP/airport-monitor-build/Build/Products/$configuration/Airport Monitor.app"
+          app="$RUNNER_TEMP/airport-monitor-build/Build/Products/Release/Airport Monitor.app"
           version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
           tag="v$version"
           if [[ "$EVENT_NAME" == push && "$REF_TYPE" == tag ]]; then
@@ -123,7 +131,7 @@ jobs:
       - name: Verify update feed with an isolated key
         if: github.event_name != 'push' || github.ref_type != 'tag'
         run: |
-          app="$RUNNER_TEMP/airport-monitor-build/Build/Products/Debug/Airport Monitor.app"
+          app="$RUNNER_TEMP/airport-monitor-build/Build/Products/Release/Airport Monitor.app"
           version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
           tag="v$version"
           notes="$RUNNER_TEMP/airport-monitor-test-notes.md"
@@ -136,7 +144,7 @@ jobs:
       - name: Verify invalid update signatures are rejected
         if: github.event_name != 'push' || github.ref_type != 'tag'
         run: |
-          app="$RUNNER_TEMP/airport-monitor-build/Build/Products/Debug/Airport Monitor.app"
+          app="$RUNNER_TEMP/airport-monitor-build/Build/Products/Release/Airport Monitor.app"
           version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
           tools/release/test-appcast.sh "$app" "$RUNNER_TEMP/airport-monitor-release/Airport-Monitor-v$version-macOS-universal.zip" \
             "$RUNNER_TEMP/airport-monitor-test-notes.md" "$RUNNER_TEMP/airport-monitor-packages/artifacts/sparkle/Sparkle/bin" \

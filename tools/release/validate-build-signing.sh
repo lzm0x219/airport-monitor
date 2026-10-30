@@ -12,8 +12,26 @@ if [[ "${SPARKLE_FEED_URL:-}" != "https://github.com/lzm0x219/airport-monitor/re
   echo "error: Release builds must use the official update feed." >&2
   exit 1
 fi
-if [[ -z "${CODE_SIGN_IDENTITY:-}" || "$CODE_SIGN_IDENTITY" == "-" ]]; then
-  echo "error: Release builds with the updater need an Apple signing identity." >&2
+case "${AIRPORT_RELEASE_SIGNING:-}" in
+  adhoc)
+    if [[ "${CODE_SIGN_IDENTITY:-}" != "-" || "${CODE_SIGN_ENTITLEMENTS:-}" != AirportMonitor.AdHoc.entitlements ]]; then
+      echo "error: Ad-hoc Release builds must use the ad-hoc identity and entitlements." >&2
+      exit 1
+    fi
+    ;;
+  developer-id)
+    if [[ -z "${CODE_SIGN_IDENTITY:-}" || "$CODE_SIGN_IDENTITY" == "-" || "${CODE_SIGN_ENTITLEMENTS:-}" != AirportMonitor.entitlements ]]; then
+      echo "error: Developer ID Release builds need an Apple signing identity and release entitlements." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "error: AIRPORT_RELEASE_SIGNING must be adhoc or developer-id." >&2
+    exit 1
+    ;;
+esac
+if [[ "${CODE_SIGN_INJECT_BASE_ENTITLEMENTS:-}" != NO ]]; then
+  echo "error: Release builds must not inject debugging entitlements." >&2
   exit 1
 fi
 if [[ -z "${SPARKLE_PUBLIC_KEY:-}" ]]; then

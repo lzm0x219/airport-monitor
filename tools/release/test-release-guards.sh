@@ -88,10 +88,17 @@ PY
 done
 
 expected_feed=https://github.com/lzm0x219/airport-monitor/releases/latest/download/appcast.xml
-expect_failure env CONFIGURATION=Release CODE_SIGN_IDENTITY='test identity' SPARKLE_FEED_URL="$expected_feed" \
-  SPARKLE_PUBLIC_KEY="$public_key" SWIFT_ACTIVE_COMPILATION_CONDITIONS=UPDATE_TESTING "$script_dir/validate-build-signing.sh"
-expect_failure env CONFIGURATION=Release CODE_SIGN_IDENTITY='test identity' SPARKLE_FEED_URL=https://example.com/appcast.xml \
-  SPARKLE_PUBLIC_KEY="$public_key" "$script_dir/validate-build-signing.sh"
-env CONFIGURATION=Release CODE_SIGN_IDENTITY='test identity' SPARKLE_FEED_URL="$expected_feed" \
-  SPARKLE_PUBLIC_KEY="$public_key" "$script_dir/validate-build-signing.sh"
+export CONFIGURATION=Release SPARKLE_FEED_URL="$expected_feed" SPARKLE_PUBLIC_KEY="$public_key"
+export CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO
+export AIRPORT_RELEASE_SIGNING=adhoc CODE_SIGN_IDENTITY=- CODE_SIGN_ENTITLEMENTS=AirportMonitor.AdHoc.entitlements
+expect_failure env SWIFT_ACTIVE_COMPILATION_CONDITIONS=UPDATE_TESTING "$script_dir/validate-build-signing.sh"
+expect_failure env SPARKLE_FEED_URL=https://example.com/appcast.xml "$script_dir/validate-build-signing.sh"
+expect_failure env CODE_SIGN_IDENTITY='test identity' "$script_dir/validate-build-signing.sh"
+expect_failure env CODE_SIGN_ENTITLEMENTS=AirportMonitor.entitlements "$script_dir/validate-build-signing.sh"
+expect_failure env CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES "$script_dir/validate-build-signing.sh"
+"$script_dir/validate-build-signing.sh"
+env AIRPORT_RELEASE_SIGNING=developer-id CODE_SIGN_IDENTITY='test identity' \
+  CODE_SIGN_ENTITLEMENTS=AirportMonitor.entitlements "$script_dir/validate-build-signing.sh"
+expect_failure env AIRPORT_RELEASE_SIGNING=developer-id "$script_dir/validate-build-signing.sh"
+expect_failure env AIRPORT_RELEASE_SIGNING=invalid "$script_dir/validate-build-signing.sh"
 echo "Release configuration and signing continuity checks passed."

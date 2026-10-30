@@ -49,7 +49,7 @@ open AirportMonitor.xcodeproj
 
 在 Xcode 中选择 **AirportMonitor → My Mac**，按 **⌘R**。
 
-<sub>本机调试构建使用 ad-hoc 签名，仅供开发验证；正式发布需要 Developer ID 签名和 Apple 公证。终端构建、产物位置和测试方式见[构建说明](docs/USAGE.md#用-xcode-打开编译)。</sub>
+<sub>本机构建与默认发布包使用 ad-hoc 签名，未经过 Apple 公证；发布流程也支持配置 Developer ID 和公证。终端构建、产物位置和测试方式见[构建说明](docs/USAGE.md#用-xcode-打开编译)。</sub>
 
 **2 · 添加机场。** 点击主窗口右上角的「＋」，粘贴订阅链接并点击「读取」。核对预览，填写机场名称并确认添加。添加后可在机场配置中设置重置规则和提醒。
 

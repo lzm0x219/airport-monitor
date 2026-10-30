@@ -1,8 +1,8 @@
 # 构建与发布
 
-GitHub Actions 在推送 `main`、提交 Pull Request 和手动运行时执行 Swift 测试、构建 Apple Silicon 与 Intel 通用调试应用，并验证更新签名与打包。该产物只供验证，不用于分发。限频并发测试单独顺序运行，避免其他测试占用主线程触发其保护计时器；测试内部的并发场景仍会执行。
+GitHub Actions 在推送 `main`、提交 Pull Request 和手动运行时执行 Swift 测试、构建 Apple Silicon 与 Intel 通用 Release 应用，并用临时密钥验证更新签名与打包。该产物只供验证，不用于分发。限频并发测试单独顺序运行，避免其他测试占用主线程触发其保护计时器；测试内部的并发场景仍会执行。
 
-推送版本标签时，流水线需要发布签名、公证和更新签名配置，构建并公证 Release 应用后生成带签名的更新信息与 Release 草稿。配置缺失或检查失败时不会创建草稿。手动运行只验证，不创建发布。
+推送版本标签时，流水线默认构建未公证的 ad-hoc 签名应用，并使用项目更新密钥签署更新信息和安装包，再创建 Release 草稿。也可以配置 Developer ID 签名和 Apple 公证。所选模式的配置缺失或检查失败时不会创建草稿。手动运行只验证，不创建发布。
 
 ## 创建发布草稿
 
@@ -25,10 +25,17 @@ GitHub Actions 在推送 `main`、提交 Pull Request 和手动运行时执行 S
 标签构建需要在 GitHub Actions secrets 中配置：
 
 - `SPARKLE_PRIVATE_KEY`：Sparkle 更新私钥的 base64 编码种子，必须与工程中的公钥匹配。
+
+默认 `adhoc` 模式不需要 Apple 开发者凭据。它不提供 Apple 开发者身份验证和公证；用户首次打开时可能需要在系统设置中允许。为让 Sparkle 在 ad-hoc 签名下加载，应用关闭了库验证，应明确告知使用者这一运行保护的差异。
+
+如果以后使用 Developer ID 和公证，将 GitHub Actions 仓库变量 `AIRPORT_RELEASE_SIGNING` 设为 `developer-id`，并配置以下 secrets：
+
 - `APPLE_CERTIFICATE_BASE64`、`APPLE_CERTIFICATE_PASSWORD`：包含 Developer ID Application 身份的 P12 文件及其密码。
 - `APPLE_NOTARY_KEY_BASE64`、`APPLE_NOTARY_KEY_ID`、`APPLE_NOTARY_ISSUER_ID`：Apple 公证使用的 App Store Connect API 密钥文件及其标识。
 
-私钥可用 Sparkle 的 `generate_keys --account airport-monitor.release.ed25519 -x <安全路径>` 从钥匙串导出，再通过标准输入配置 GitHub secret；用完后按自己的密钥保管方式处理导出文件。不要将密钥写进命令参数或日志。正式签名与公证需要可用的 Apple 开发者凭据。
+变量留空或设为 `adhoc` 使用默认模式；其他值会使标签构建失败。Developer ID 模式必须使用正确的证书与公证凭据，不会在失败时静默回退到 ad-hoc。
+
+更新私钥可用 Sparkle 的 `generate_keys --account airport-monitor.release.ed25519 -x <安全路径>` 从钥匙串导出，再通过标准输入配置 GitHub secret；用完后按自己的密钥保管方式处理导出文件。不要将密钥写进命令参数或日志。没有 Developer ID 时，应特别妥善备份更新私钥，丢失后无法用现有密钥签署更新。
 
 发布附件包含 `appcast.xml`，只有发布后的最新稳定版会通过 GitHub 的 `releases/latest/download/appcast.xml` 提供给更新器；草稿不会触发用户更新。若上一正式版没有更新信息，其用户需先手动安装包含更新器的版本。
 
@@ -50,7 +57,7 @@ GitHub Actions 在推送 `main`、提交 Pull Request 和手动运行时执行 S
 
 - `Airport-Monitor-v1.0.0-macOS-universal.zip` 包含一个支持 arm64 和 x86_64、最低要求 macOS 14 的应用。
 - `SHA256SUMS.txt` 记录 ZIP 与更新信息的 SHA-256；下载校验文件及其列出的附件后，可执行 `shasum -a 256 -c SHA256SUMS.txt`。
-- 新的正式产物沿用 `local.SurgeTrafficMonitor` 标识，并要求 Developer ID 签名、Apple 公证和更新签名。已有的 `v1.0.0` 草稿附件仍是未公证的 ad-hoc 构建；重新签名或更新后，钥匙串可能要求重新授权。
+- 正式产物沿用 `local.SurgeTrafficMonitor` 标识，并要求更新签名。默认 ad-hoc 产物未经过 Developer ID 签名和 Apple 公证，用户可能需要手动允许打开；重新签名或更新后，钥匙串可能要求重新授权。
 - Actions 验证测试、通用二进制、签名完整性及 ZIP 解包结果；这些检查不代表应用已经通过实机验收，也不验证 Intel Mac 上的运行表现。
 
 本机构建命令见[使用说明](USAGE.md#用-xcode-打开编译)。

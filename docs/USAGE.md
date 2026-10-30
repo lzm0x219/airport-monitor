@@ -1,12 +1,12 @@
 # Airport Monitor 使用与数据说明
 
-本文说明安装、日常操作、数据口径和故障恢复。[返回项目首页](../README.md)。当前源码版本为 1.0.0。应用沿用原内部 Bundle Identifier 和存储目录。
+本文说明安装、日常操作、数据口径和故障恢复。[返回项目首页](../README.md)。当前源码版本为 1.0.1。应用沿用原内部 Bundle Identifier 和存储目录。
 
 ## 从发布版本安装或更新
 
 1. 从 [GitHub Releases](https://github.com/lzm0x219/airport-monitor/releases) 下载 ZIP 并解压。
 2. 如果已有 Airport Monitor，先退出正在运行的应用。在访达中将下载版复制到「应用程序」文件夹；更新时请复制到旧版所在文件夹，并在提示时选择「替换」。关闭主窗口不会退出应用。
-3. 从「应用程序」文件夹打开应用。`v1.0.0` 草稿中的下载包未使用 Apple Developer ID 签名，也未经过 Apple 公证，macOS 可能提示无法验证。如果已确认下载来源可信且文件未被篡改，仍选择打开，可在「系统设置 → 隐私与安全性」中选择「仍要打开」，再按系统提示完成验证和确认。详见 [Apple 的说明](https://support.apple.com/zh-cn/102445)。
+3. 从「应用程序」文件夹打开应用。默认发布包未使用 Apple Developer ID 签名，也未经过 Apple 公证，macOS 可能提示无法验证。如果已确认下载来源可信且文件未被篡改，仍选择打开，可在「系统设置 → 隐私与安全性」中选择「仍要打开」，再按系统提示完成验证和确认。详见 [Apple 的说明](https://support.apple.com/zh-cn/102445)。
 
 如需核对下载，将发布附件中的 ZIP、`SHA256SUMS.txt` 和校验文件列出的其他附件放在同一目录，在该目录执行 `shasum -a 256 -c SHA256SUMS.txt`。
 
@@ -39,7 +39,7 @@ xcodebuild -project AirportMonitor.xcodeproj \
   'ARCHS=arm64 x86_64' ONLY_ACTIVE_ARCH=NO build
 ```
 
-产物位于 `/tmp/AirportMonitorBuild/Build/Products/Debug/Airport Monitor.app`。调试构建使用本机 ad-hoc 签名，并仅为加载更新框架关闭库验证，不应对外分发；未配置更新公钥时不会检查更新。正式发布的签名、公证与更新密钥配置见[构建与发布](release.md)。重新签名或更改 Bundle Identifier 后，钥匙串可能要求重新授权。若 Documents 或 iCloud 目录触发 `resource fork ... not allowed` 签名错误，可使用上述 `/tmp` 构建目录。
+产物位于 `/tmp/AirportMonitorBuild/Build/Products/Debug/Airport Monitor.app`。调试构建使用本机 ad-hoc 签名，未配置更新公钥时不会检查更新。默认发布构建同样采用 ad-hoc 签名，没有 Apple 公证；两者为加载更新框架关闭库验证。发布模式和更新密钥配置见[构建与发布](release.md)。重新签名或更改 Bundle Identifier 后，钥匙串可能要求重新授权。若 Documents 或 iCloud 目录触发 `resource fork ... not allowed` 签名错误，可使用上述 `/tmp` 构建目录。
 
 运行核心逻辑、原生模型和模拟网络测试：
 

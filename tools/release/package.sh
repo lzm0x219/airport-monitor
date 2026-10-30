@@ -56,18 +56,25 @@ trap 'rm -rf "$temporary_dir"' EXIT
 verify_architectures "$executable"
 codesign --verify --all-architectures --deep --strict --verbose=2 "$app"
 signature=$(codesign -dvv "$app" 2>&1)
-if [[ "$signature" == *"Signature=adhoc"* ]]; then
-  if [[ "${AIRPORT_TEST_PACKAGE:-0}" != 1 ]]; then
-    echo "Ad-hoc builds are only allowed for isolated testing." >&2
+case "${AIRPORT_RELEASE_SIGNING:-adhoc}" in
+  adhoc)
+    if [[ "$signature" != *"Signature=adhoc"* ]]; then
+      echo "Expected an ad-hoc signed application." >&2
+      exit 1
+    fi
+    ;;
+  developer-id)
+    if [[ "$signature" != *"Authority=Developer ID Application:"* || "$signature" == *"TeamIdentifier=not set"* ]]; then
+      echo "Expected a Developer ID Application signature." >&2
+      exit 1
+    fi
+    xcrun stapler validate "$app"
+    ;;
+  *)
+    echo "AIRPORT_RELEASE_SIGNING must be adhoc or developer-id." >&2
     exit 1
-  fi
-else
-  if [[ "$signature" != *"Authority=Developer ID Application:"* || "$signature" == *"TeamIdentifier=not set"* ]]; then
-    echo "Release packages require a Developer ID Application signature." >&2
-    exit 1
-  fi
-  xcrun stapler validate "$app"
-fi
+    ;;
+esac
 codesign -d --xml --entitlements - "$app" > "$temporary_dir/entitlements.plist"
 for entitlement in com.apple.security.app-sandbox com.apple.security.network.client; do
   value=$(/usr/libexec/PlistBuddy -c "Print :$entitlement" "$temporary_dir/entitlements.plist")
@@ -76,10 +83,19 @@ for entitlement in com.apple.security.app-sandbox com.apple.security.network.cli
     exit 1
   fi
 done
+library_validation=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.cs.disable-library-validation' "$temporary_dir/entitlements.plist" 2>/dev/null || true)
+if [[ "${AIRPORT_RELEASE_SIGNING:-adhoc}" == adhoc && "$library_validation" != true ]]; then
+  echo "Ad-hoc builds need the entitlement required to load Sparkle." >&2
+  exit 1
+fi
+if [[ "${AIRPORT_RELEASE_SIGNING:-adhoc}" == developer-id && "$library_validation" == true ]]; then
+  echo "Developer ID builds must retain library validation." >&2
+  exit 1
+fi
 if [[ "${AIRPORT_TEST_PACKAGE:-0}" != 1 ]]; then
-  library_validation=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.cs.disable-library-validation' "$temporary_dir/entitlements.plist" 2>/dev/null || true)
-  if [[ "$library_validation" == true ]]; then
-    echo "Release packages must retain library validation." >&2
+  debug_entitlement=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.get-task-allow' "$temporary_dir/entitlements.plist" 2>/dev/null || true)
+  if [[ "$debug_entitlement" == true ]]; then
+    echo "Release packages must not allow debugging." >&2
     exit 1
   fi
 fi
