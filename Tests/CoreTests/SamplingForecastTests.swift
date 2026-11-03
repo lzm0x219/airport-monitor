@@ -62,4 +62,21 @@ struct SamplingForecastTests {
         #expect(predict(value, revisions: revisions).estimate == nil)
         #expect(predict(try ledger(zero: true)).diagnostic == .zeroGrowth)
     }
+    @Test func sparsePredictionCanProduceReminderCandidateWithoutAdditionalRead() throws {
+        var value = Ledger()
+        for index in 0..<4 {
+            try value.append(Subscription(upload: 0, download: UInt64(index) * 7_200_000_000,
+                                          total: 50_000_000_000, expiry: nil),
+                             at: start.addingTimeInterval(Double(index) * 72 * 3600))
+        }
+        let latest = try #require(value.samples.last)
+        let estimate = try #require(predict(value).estimate)
+        let boundary = try #require(estimate.boundary)
+        let required = estimate.dailyBytes * boundary.timeIntervalSince(latest.date) / 86400
+        let result = SamplingForecastReminderPolicy.evaluate(state: .init(), sampleID: latest.id,
+            observedAt: latest.date, now: latest.date,
+            remaining: latest.subscription.remaining.map(Double.init), required: required, eligible: true)
+        #expect(result.shouldNotify)
+        #expect(value.samples.count == 4)
+    }
 }

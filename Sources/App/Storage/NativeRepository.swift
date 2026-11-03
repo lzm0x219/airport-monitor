@@ -447,13 +447,15 @@ final class NativeRepository {
     /// Acknowledges only the published intention, including after a source change.
     /// It cannot replace credentials, samples, configuration or another delivery.
     func updateReminderRecord(sourceID: String, deliveryID: String, state: ReminderState?, delivery: ReminderDelivery?,
-                              unconfirmedDeliveries: [ReminderDelivery]? = nil) throws {
+                              unconfirmedDeliveries: [ReminderDelivery]? = nil,
+                              deferredDeliveries: [ReminderDelivery]? = nil) throws {
         guard let index = snapshot.sources.firstIndex(where: { $0.id == sourceID }),
               snapshot.sources[index].reminderDelivery?.id == deliveryID else { throw TrafficError.storage }
         var next = snapshot
         next.sources[index].readContextRevision = snapshot.sources[index].effectiveReadContextRevision
         next.sources[index].reminderState = state
         next.sources[index].reminderDelivery = delivery
+        if let deferredDeliveries { next.sources[index].reminderDeferredDeliveries = deferredDeliveries }
         if let unconfirmedDeliveries { next.sources[index].reminderUnconfirmedDeliveries = unconfirmedDeliveries }
         next.sources[index].revision = UUID()
         try commit(next)

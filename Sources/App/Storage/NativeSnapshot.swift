@@ -43,6 +43,7 @@ struct SourceRecord: Codable, Identifiable {
     var reminderPreferences: ReminderPreferences?
     var reminderState: ReminderState?
     var reminderDelivery: ReminderDelivery?
+    var reminderDeferredDeliveries: [ReminderDelivery]?
     var reminderUnconfirmedDeliveries: [ReminderDelivery]?
     var airportRemindersEnabled: Bool?
     var needsVerification = false
@@ -54,6 +55,17 @@ struct SourceRecord: Codable, Identifiable {
     mutating func clearReminderConfirmations() {
         reminderState?.lowRecovery = nil; reminderState?.exhaustionRecovery = nil
         reminderState?.forecastTrigger = nil; reminderState?.forecastRecovery = nil
+        clearSamplingForecastConfirmation()
+    }
+
+    mutating func clearSamplingForecastConfirmation() {
+        reminderState?.samplingForecastState?.recoverySampleID = nil
+        reminderState?.samplingForecastState?.pendingSampleID = nil
+        reminderState?.samplingForecastState?.pendingAuthorized = nil
+        if let latest = ledger.samples.last {
+            reminderState?.samplingForecastState?.lastSampleID = latest.id
+            reminderState?.samplingForecastState?.lastObservedAt = latest.date
+        }
     }
 }
 
@@ -95,6 +107,7 @@ struct NativeSnapshot: Codable {
             try source.ledger.validate()
             if let preferences = source.reminderPreferences, !preferences.isValid { throw TrafficError.storage }
             if let delivery = source.reminderDelivery, delivery.sourceID != source.id { throw TrafficError.storage }
+            if source.reminderDeferredDeliveries?.contains(where: { $0.sourceID != source.id }) == true { throw TrafficError.storage }
             if source.reminderUnconfirmedDeliveries?.contains(where: { $0.sourceID != source.id }) == true { throw TrafficError.storage }
             for revision in source.resetRevisions { try revision.rule.validate() }
         }

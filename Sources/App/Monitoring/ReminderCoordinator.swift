@@ -49,7 +49,7 @@ struct ReminderServices {
         switch reason.kind {
         case .low: return "剩余流量偏低"
         case .exhausted: return "流量已用尽"
-        case .forecast: return "预计流量不足以撑到重置"
+        case .forecast: return "按近期用量估计，流量可能在重置前用完"
         case .expirySoon: return "即将到期"
         case .expiryDay: return "24 小时内到期"
         case .expired: return "已到期"
@@ -101,7 +101,7 @@ final class ReminderCoordinator {
             case .accepted:
                 current.reminderState = ReminderPolicy.markAccepted(pending.reasons, at: pending.attemptedAt,
                                                                    state: current.reminderState ?? ReminderState())
-                current.reminderDelivery = nil
+                current.reminderDelivery = current.reminderDeferredDeliveries?.first
             case .unknown, .notFound:
                 var uncertain = pending; uncertain.status = .unconfirmed
                 current.reminderUnconfirmedDeliveries = (current.reminderUnconfirmedDeliveries ?? []) + [uncertain]
@@ -109,18 +109,21 @@ final class ReminderCoordinator {
                 // of OS acceptance; the separate audit list preserves that distinction.
                 current.reminderState = ReminderPolicy.markAccepted(pending.reasons, at: pending.attemptedAt,
                     state: current.reminderState ?? ReminderState())
-                current.reminderDelivery = nil
+                current.reminderDelivery = current.reminderDeferredDeliveries?.first
                 hasUnconfirmed = true
             }
             do { try repository.updateReminderRecord(sourceID: sourceID, deliveryID: pending.id,
                 state: current.reminderState, delivery: current.reminderDelivery,
-                unconfirmedDeliveries: current.reminderUnconfirmedDeliveries) }
+                unconfirmedDeliveries: current.reminderUnconfirmedDeliveries,
+                deferredDeliveries: Array((current.reminderDeferredDeliveries ?? []).dropFirst())) }
             catch { return .storageFailure }
         }
 
         guard var source = repository.source(for: airportID), source.id == sourceID,
               let suppliedInput = inputProvider() else { return .idle }
-        let input = effectiveInput(suppliedInput, airportID: airportID, source: source)
+        var input = effectiveInput(suppliedInput, airportID: airportID, source: source)
+        input.resumeSamplingCandidate = source.reminderDelivery?.status == .failed ||
+            (source.reminderDelivery == nil && source.reminderState?.samplingForecastState?.pendingAuthorized == true)
         let startingState = initialState(for: source, at: input.now)
         let decision = ReminderPolicy.evaluate(input: input, preferences: preferences(for: source),
                                                state: startingState)
@@ -129,18 +132,54 @@ final class ReminderCoordinator {
             source.reminderState = decision.state
             do { try repository.updateSource(source) } catch { return .storageFailure }
         }
-        guard !decision.reasons.isEmpty else { return hasUnconfirmed ? .unconfirmed : .idle }
-        if let retry = source.reminderDelivery?.retryAfter, input.now < retry { return .retryScheduled }
+        guard !decision.reasons.isEmpty else {
+            if let current = repository.source(for: airportID),
+               let failed = current.reminderDelivery, failed.status == .failed {
+                let deferred = current.reminderDeferredDeliveries ?? []
+                do {
+                    try repository.updateReminderRecord(sourceID: sourceID, deliveryID: failed.id,
+                        state: current.reminderState ?? ReminderState(), delivery: deferred.first,
+                        deferredDeliveries: Array(deferred.dropFirst()))
+                } catch { return .storageFailure }
+                if !deferred.isEmpty { return .retryScheduled }
+            }
+            return hasUnconfirmed ? .unconfirmed : .idle
+        }
+        var urgentOnly = false
+        if let failed = source.reminderDelivery, let retry = failed.retryAfter, input.now < retry {
+            let urgent = decision.reasons.contains { reason in
+                [.exhausted, .expired, .expiryDay].contains(reason.kind) &&
+                    !failed.reasons.contains(where: { $0.kind == reason.kind && $0.expiry == reason.expiry })
+            }
+            if !urgent { return .retryScheduled }
+            urgentOnly = true
+        }
 
         let authorization = await services.authorizationStatus()
-        guard authorization == .authorized || authorization == .provisional else { return .denied }
+        guard authorization == .authorized || authorization == .provisional else {
+            if var current = repository.source(for: airportID), current.id == sourceID,
+               var state = current.reminderState, var sampling = state.samplingForecastState {
+                sampling = SamplingForecastReminderPolicy.cancelPending(state: sampling)
+                state.samplingForecastState = sampling
+                current.reminderState = state
+                do { try repository.updateSource(current) } catch { return .storageFailure }
+            }
+            return .denied
+        }
         // Permissions and settings can change while the system call is suspended.
         guard var latest = repository.source(for: airportID), latest.id == sourceID,
               let suppliedCurrentInput = inputProvider() else { return .idle }
-        let currentInput = effectiveInput(suppliedCurrentInput, airportID: airportID, source: latest)
+        var currentInput = effectiveInput(suppliedCurrentInput, airportID: airportID, source: latest)
+        currentInput.resumeSamplingCandidate = true
         let currentStartingState = initialState(for: latest, at: currentInput.now)
-        let currentDecision = ReminderPolicy.evaluate(input: currentInput, preferences: preferences(for: latest),
+        var currentDecision = ReminderPolicy.evaluate(input: currentInput, preferences: preferences(for: latest),
                                                       state: currentStartingState)
+        if urgentOnly, let failed = latest.reminderDelivery {
+            currentDecision.reasons = currentDecision.reasons.filter { reason in
+                [.exhausted, .expired, .expiryDay].contains(reason.kind) &&
+                    !failed.reasons.contains(where: { $0.kind == reason.kind && $0.expiry == reason.expiry })
+            }
+        }
         guard isEnabled(airportID, input: currentInput), !currentDecision.reasons.isEmpty else {
             if currentDecision.state != currentStartingState {
                 latest.reminderState = currentDecision.state
@@ -148,10 +187,24 @@ final class ReminderCoordinator {
             }
             return .idle
         }
+        // Persist the authorization check separately. If writing the subsequent
+        // delivery intention fails, this exact candidate can be safely resumed.
+        if currentDecision.reasons.contains(where: { $0.kind == .forecast && $0.forecastRiskID != nil }),
+           var sampling = currentDecision.state.samplingForecastState, sampling.pendingAuthorized != true {
+            sampling.pendingAuthorized = true
+            currentDecision.state.samplingForecastState = sampling
+            latest.reminderState = currentDecision.state
+            do { try repository.updateSource(latest) } catch { return .storageFailure }
+            guard let refreshed = repository.source(for: airportID), refreshed.id == sourceID else { return .idle }
+            latest = refreshed
+        }
         let intention = ReminderDelivery(id: "airport-reminder-" + UUID().uuidString,
                                          sourceID: sourceID, reasons: currentDecision.reasons,
                                          attemptedAt: services.now(), status: .pending)
         latest.reminderState = currentDecision.state
+        if urgentOnly, let failed = latest.reminderDelivery {
+            latest.reminderDeferredDeliveries = (latest.reminderDeferredDeliveries ?? []) + [failed]
+        }
         latest.reminderDelivery = intention
         // No submission is permitted until its identity has been durably published.
         do { try repository.updateSource(latest) } catch { return .storageFailure }
@@ -174,9 +227,10 @@ final class ReminderCoordinator {
               current.reminderDelivery?.id == intention.id else { return .idle }
         current.reminderState = ReminderPolicy.markAccepted(intention.reasons, at: intention.attemptedAt,
                                                            state: current.reminderState ?? ReminderState())
-        current.reminderDelivery = nil
+        current.reminderDelivery = current.reminderDeferredDeliveries?.first
         do { try repository.updateReminderRecord(sourceID: sourceID, deliveryID: intention.id,
-            state: current.reminderState ?? ReminderState(), delivery: nil) }
+            state: current.reminderState ?? ReminderState(), delivery: current.reminderDelivery,
+            deferredDeliveries: Array((current.reminderDeferredDeliveries ?? []).dropFirst())) }
         catch { return .storageFailure }
         return .sent
     }

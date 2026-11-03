@@ -130,6 +130,7 @@ final class MonitorModel: ObservableObject {
     private var timer: Task<Void, Never>?
     private var reminderRetryTask: Task<Void, Never>?
     private var pendingReminderReset = false
+    private var pendingSamplingReset = false
     private var wakeObserver: NSObjectProtocol?
     private let defaults: UserDefaults
     private let fallbackStatisticsTimeZone = TimeZone.current
@@ -219,7 +220,7 @@ final class MonitorModel: ObservableObject {
     }
     /// Display-only snapshot: always evaluate at the last real observation, so
     /// timers, failures and restarts cannot slide the estimate into the present.
-    /// Existing forecastResult remains the input for all reminder decisions.
+    /// Current reminder eligibility is evaluated separately using the same sampling mode.
     var samplingForecastResult: ForecastResult {
         guard let latest else {
             return observationAnalysis(rule: resetRule, revisions: [])
@@ -525,7 +526,7 @@ final class MonitorModel: ObservableObject {
             error = nil; syncPending = false
             if repository == nil { recordSync(subscription: result, message: nil) }
             if readLifecycle.finish(token) { busy = false }
-            await evaluateReminders()
+            await evaluateReminders(newlySavedSampleID: latest?.id)
         } catch let cooldown as SubscriptionCooldown {
             guard eligible(), !Task.isCancelled else { return }
             requestAvailableAt = cooldown.until
@@ -623,6 +624,9 @@ final class MonitorModel: ObservableObject {
                 preferences.lowThreshold = threshold; source.reminderPreferences = preferences
             }
             source.threshold = threshold
+            if SubscriptionRefreshPolicy.normalized(interval) != intervalMinutes {
+                source.clearSamplingForecastConfirmation()
+            }
             if source.resetRule != reset {
                 source.resetRevisions.append(ResetRevision(effectiveAt: services.now(), rule: reset))
                 source.needsVerification = true
@@ -680,7 +684,7 @@ final class MonitorModel: ObservableObject {
         }
     }
 
-    func evaluateReminders() async {
+    func evaluateReminders(newlySavedSampleID: UUID? = nil) async {
         guard !isDemo, let repository, let airportID else { return }
         let generation = readLifecycle.generation
         guard await ensureInitialGateChecked(generation: generation) else { return }
@@ -692,7 +696,9 @@ final class MonitorModel: ObservableObject {
             }
             catch { reminderDeliveryStatus = .storageFailure; return }
         }
-        guard resetReminderConfirmationsIfNeeded() else { reminderDeliveryStatus = .storageFailure; return }
+        guard resetReminderConfirmationsIfNeeded(), resetSamplingConfirmationIfNeeded() else {
+            reminderDeliveryStatus = .storageFailure; return
+        }
         var delivery = services.reminderServices ?? ReminderServices()
         if services.reminderServices == nil {
             delivery.authorizationStatus = services.notificationAuthorizationStatus
@@ -704,21 +710,31 @@ final class MonitorModel: ObservableObject {
                 guard let self, profileID == expectedSource, !storageBlocked,
                       let source = storedSource, source.id == expectedSource else { return nil }
                 let fresh = error == nil && !stale && !busy && !syncPending && !linkVerificationPending
-                let estimate = forecastResult.estimate
+                let estimate = currentObservationAnalysis.forecast(at: referenceDate, intervalMinutes: intervalMinutes,
+                    calendar: calendar, synchronizationFailed: error != nil || storageBlocked,
+                    availability: forecastAvailability, mode: .samplingSnapshot).estimate
                 let required = estimate.flatMap { estimate in
                     estimate.boundary.map { estimate.dailyBytes * max(0, $0.timeIntervalSince(self.latest?.date ?? self.referenceDate)) / 86_400 }
                 }
-                return ReminderInput(now: referenceDate, sampleID: latest?.id, observedAt: latest?.date,
+                var input = ReminderInput(now: referenceDate, sampleID: latest?.id, observedAt: latest?.date,
                     remainingBytes: latest?.subscription.remaining.map { Double($0) },
                     totalBytes: latest.map { Double($0.subscription.total) }, expiry: latest?.subscription.expiry,
                     forecastRequiredBytes: required, usageFresh: fresh, forecastEligible: estimate != nil,
                     globalEnabled: remindersEnabled, airportEnabled: source.airportRemindersEnabled ?? true,
                     paused: !enabled, archived: archived)
+                let samples = source.ledger.samples
+                let previous = newlySavedSampleID == latest?.id && samples.count >= 2 ? samples[samples.count - 2] : nil
+                input.samplingForecast = SamplingForecastContext(
+                    scheduledBoundary: resetRule.window(at: referenceDate).previous,
+                    ruleID: source.resetRevisions.last?.id,
+                    ruleEffectiveAt: source.resetRevisions.last?.effectiveAt,
+                    priorSampleID: previous?.id, priorObservedAt: previous?.date)
+                return input
             }
         guard profileID == expectedSource else { return }
         reminderDeliveryStatus = result
         reminderRetryTask?.cancel(); reminderRetryTask = nil
-        if result == .retryScheduled, monitoringStarted, enabled, !archived,
+        if (result == .retryScheduled || result == .sent), monitoringStarted, enabled, !archived,
            remindersEnabled, let retryAt = storedSource?.reminderDelivery?.retryAfter {
             let delay = max(1, retryAt.timeIntervalSince(services.now()))
             reminderRetryTask = Task { [weak self] in
@@ -761,6 +777,18 @@ final class MonitorModel: ObservableObject {
         return true
     }
 
+    private func resetSamplingConfirmationIfNeeded() -> Bool {
+        guard pendingSamplingReset else { return true }
+        guard !isDemo, let repository, let airportID, var source = repository.source(for: airportID) else { return true }
+        let prior = source.reminderState
+        source.clearSamplingForecastConfirmation()
+        if prior != source.reminderState {
+            do { try repository.updateSource(source) } catch { return false }
+        }
+        pendingSamplingReset = false
+        return true
+    }
+
     private func schedule() {
         timer?.cancel()
         timer = nil; nextRefresh = nil
@@ -784,7 +812,12 @@ final class MonitorModel: ObservableObject {
     }
 
     func applyInterval(_ minutes: Int) {
-        intervalMinutes = SubscriptionRefreshPolicy.normalized(minutes)
+        let normalized = SubscriptionRefreshPolicy.normalized(minutes)
+        if normalized != intervalMinutes && !isDemo {
+            pendingSamplingReset = true
+            _ = resetSamplingConfirmationIfNeeded()
+        }
+        intervalMinutes = normalized
         if !isDemo { defaults.set(intervalMinutes, forKey: "intervalMinutes"); schedule() }
     }
 

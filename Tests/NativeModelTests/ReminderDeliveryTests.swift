@@ -235,4 +235,185 @@ struct ReminderDeliveryTests {
         #expect(store.history(for: f.first.id).first(where: { $0.id == old.id })?.reminderState?.lowNotified == true)
         try f.assertOriginals()
     }
+    @Test func sampledForecastRetriesAndRecordsOnlyItsOwnRisk() async throws {
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture()
+        var source = try #require(store.source(for: f.first.id))
+        source.reminderPreferences = ReminderPreferences(lowEnabled: false, forecastEnabled: true, expiryEnabled: false)
+        var state = ReminderState()
+        let previous = clock.date.addingTimeInterval(-72 * 3600)
+        state.samplingForecastState = SamplingForecastReminderPolicy.migrate(notified: false, lastAcceptedAt: nil,
+            latestSampleID: UUID(), latestObservedAt: previous, at: previous)
+        source.reminderState = state
+        try store.updateSource(source)
+        var input = clock.input
+        input.remainingBytes = 100; input.forecastRequiredBytes = 110; input.forecastEligible = true
+        input.samplingForecast = SamplingForecastContext(scheduledBoundary: nil, ruleID: nil, ruleEffectiveAt: nil)
+        let coordinator = ReminderCoordinator(repository: store, services: clock.services)
+        clock.fail = true
+        #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { input }) == .retryScheduled)
+        let failed = try #require(store.source(for: f.first.id)?.reminderDelivery)
+        #expect(failed.reasons.first?.forecastRiskID != nil)
+        #expect(store.source(for: f.first.id)?.reminderState?.samplingForecastState?.notified == false)
+        clock.fail = false; clock.date += 300; input.now = clock.date
+        #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { input }) == .sent)
+        #expect(clock.sends.count == 2)
+        #expect(store.source(for: f.first.id)?.reminderState?.samplingForecastState?.notified == true)
+        #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { input }) == .idle)
+    }
+
+    @Test func sampledForecastDeniedPermissionWaitsForNewReading() async throws {
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture()
+        var source = try #require(store.source(for: f.first.id))
+        source.reminderPreferences = ReminderPreferences(lowEnabled: false, forecastEnabled: true, expiryEnabled: false)
+        var state = ReminderState()
+        let previous = clock.date.addingTimeInterval(-72 * 3600)
+        state.samplingForecastState = SamplingForecastReminderPolicy.migrate(notified: false, lastAcceptedAt: nil,
+            latestSampleID: UUID(), latestObservedAt: previous, at: previous)
+        source.reminderState = state
+        try store.updateSource(source)
+        var input = clock.input
+        input.remainingBytes = 100; input.forecastRequiredBytes = 110; input.forecastEligible = true
+        input.samplingForecast = SamplingForecastContext(scheduledBoundary: nil, ruleID: nil, ruleEffectiveAt: nil)
+        let coordinator = ReminderCoordinator(repository: store, services: clock.services)
+        clock.authorization = .denied
+        #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { input }) == .denied)
+        clock.authorization = .authorized
+        #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { input }) == .idle)
+        clock.date += 72 * 3600; input.now = clock.date; input.observedAt = clock.date; input.sampleID = UUID()
+        #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { input }) == .sent)
+        #expect(clock.sends.count == 1)
+    }
+    @Test func sampledLateReceiptDoesNotMarkNewRisk() async throws {
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture()
+        var source = try #require(store.source(for: f.first.id))
+        source.reminderPreferences = ReminderPreferences(lowEnabled: false, forecastEnabled: true, expiryEnabled: false)
+        var state = ReminderState()
+        let previous = clock.date.addingTimeInterval(-72 * 3600)
+        state.samplingForecastState = SamplingForecastReminderPolicy.migrate(notified: false, lastAcceptedAt: nil,
+            latestSampleID: UUID(), latestObservedAt: previous, at: previous)
+        source.reminderState = state
+        try store.updateSource(source)
+        var input = clock.input
+        input.remainingBytes = 100; input.forecastRequiredBytes = 110; input.forecastEligible = true
+        input.samplingForecast = SamplingForecastContext(scheduledBoundary: nil, ruleID: nil, ruleEffectiveAt: nil)
+        clock.onSend = {
+            var updated = store.source(for: f.first.id)!
+            updated.reminderState?.samplingForecastState?.riskID = UUID()
+            try! store.updateSource(updated)
+        }
+        let coordinator = ReminderCoordinator(repository: store, services: clock.services)
+        #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { input }) == .sent)
+        #expect(store.source(for: f.first.id)?.reminderState?.samplingForecastState?.notified == false)
+    }
+
+    @Test func unknownSampledDeliveryOccupiesOnlyOriginalRisk() async throws {
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture()
+        var source = try #require(store.source(for: f.first.id))
+        source.reminderPreferences = ReminderPreferences(lowEnabled: false, forecastEnabled: true, expiryEnabled: false)
+        var state = ReminderState()
+        let previous = clock.date.addingTimeInterval(-72 * 3600)
+        state.samplingForecastState = SamplingForecastReminderPolicy.migrate(notified: false, lastAcceptedAt: nil,
+            latestSampleID: UUID(), latestObservedAt: previous, at: previous)
+        let risk = try #require(state.samplingForecastState?.riskID)
+        source.reminderState = state
+        source.reminderDelivery = ReminderDelivery(id: "pending-sampling", sourceID: source.id,
+            reasons: [ReminderReason(kind: .forecast, forecastRiskID: risk)], attemptedAt: clock.date, status: .pending)
+        try store.updateSource(source)
+        var input = clock.input
+        input.remainingBytes = 100; input.forecastRequiredBytes = 110; input.forecastEligible = true
+        input.samplingForecast = SamplingForecastContext(scheduledBoundary: nil, ruleID: nil, ruleEffectiveAt: nil)
+        let coordinator = ReminderCoordinator(repository: store, services: clock.services)
+        #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { input }) == .unconfirmed)
+        #expect(store.source(for: f.first.id)?.reminderState?.samplingForecastState?.notified == true)
+        #expect(store.source(for: f.first.id)?.reminderUnconfirmedDeliveries?.count == 1)
+        #expect(clock.sends.isEmpty)
+    }
+    @Test func urgentExpiryPreemptsFailedForecastWithoutEarlyRetry() async throws {
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture()
+        var source = try #require(store.source(for: f.first.id))
+        source.reminderPreferences = ReminderPreferences(lowEnabled: false, forecastEnabled: true, expiryEnabled: true)
+        var state = ReminderState()
+        let previous = clock.date.addingTimeInterval(-72 * 3600)
+        state.samplingForecastState = SamplingForecastReminderPolicy.migrate(notified: false, lastAcceptedAt: nil,
+            latestSampleID: UUID(), latestObservedAt: previous, at: previous)
+        source.reminderState = state
+        try store.updateSource(source)
+        var input = clock.input
+        input.remainingBytes = 100; input.forecastRequiredBytes = 110; input.forecastEligible = true
+        input.samplingForecast = SamplingForecastContext(scheduledBoundary: nil, ruleID: nil, ruleEffectiveAt: nil)
+        let coordinator = ReminderCoordinator(repository: store, services: clock.services)
+        clock.fail = true
+        #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { input }) == .retryScheduled)
+        clock.fail = false; clock.date += 1; input.now = clock.date; input.expiry = clock.date
+        #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { input }) == .sent)
+        #expect(clock.sentReasons == [[.forecast], [.expired]])
+        #expect(store.source(for: f.first.id)?.reminderDelivery?.status == .failed)
+        clock.date += 299; input.now = clock.date
+        #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { input }) == .sent)
+        #expect(clock.sentReasons == [[.forecast], [.expired], [.forecast]])
+    }
+    @Test func sampledCandidateSurvivesFailureBeforeDeliveryIntent() async throws {
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        var block = false, commits = 0
+        let store = try f.open { point in
+            if block && point == .beforePublish {
+                commits += 1
+                if commits == 3 { throw TrafficError.storage }
+            }
+        }
+        let clock = ReminderDeliveryFixture()
+        var source = try #require(store.source(for: f.first.id))
+        source.reminderPreferences = ReminderPreferences(lowEnabled: false, forecastEnabled: true, expiryEnabled: false)
+        var state = ReminderState()
+        let previous = clock.date.addingTimeInterval(-72 * 3600)
+        state.samplingForecastState = SamplingForecastReminderPolicy.migrate(notified: false, lastAcceptedAt: nil,
+            latestSampleID: UUID(), latestObservedAt: previous, at: previous)
+        source.reminderState = state
+        try store.updateSource(source)
+        var input = clock.input
+        input.remainingBytes = 100; input.forecastRequiredBytes = 110; input.forecastEligible = true
+        input.samplingForecast = SamplingForecastContext(scheduledBoundary: nil, ruleID: nil, ruleEffectiveAt: nil)
+        block = true
+        let coordinator = ReminderCoordinator(repository: store, services: clock.services)
+        #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { input }) == .storageFailure)
+        #expect(clock.sends.isEmpty)
+        let reopened = try f.open()
+        #expect(reopened.source(for: f.first.id)?.reminderDelivery == nil)
+        #expect(reopened.source(for: f.first.id)?.reminderState?.samplingForecastState?.pendingSampleID == input.sampleID)
+        let restarted = ReminderCoordinator(repository: reopened, services: clock.services)
+        #expect(await restarted.evaluate(airportID: f.first.id, inputProvider: { input }) == .sent)
+        #expect(clock.sentReasons == [[.forecast]])
+        #expect(await restarted.evaluate(airportID: f.first.id, inputProvider: { input }) == .idle)
+    }
+    @Test func resumedSamplingCandidateDoesNotSurvivePermissionDenial() async throws {
+        let f = try NativeRepositoryFixture(); defer { f.cleanup() }
+        let store = try f.open(), clock = ReminderDeliveryFixture()
+        var source = try #require(store.source(for: f.first.id))
+        source.reminderPreferences = ReminderPreferences(lowEnabled: false, forecastEnabled: true, expiryEnabled: false)
+        var state = ReminderState()
+        let previous = clock.date.addingTimeInterval(-72 * 3600)
+        var sampling = SamplingForecastReminderPolicy.migrate(notified: false, lastAcceptedAt: nil,
+            latestSampleID: UUID(), latestObservedAt: previous, at: previous)
+        var input = clock.input
+        input.remainingBytes = 100; input.forecastRequiredBytes = 110; input.forecastEligible = true
+        input.samplingForecast = SamplingForecastContext(scheduledBoundary: nil, ruleID: nil, ruleEffectiveAt: nil)
+        let candidate = SamplingForecastReminderPolicy.evaluate(state: sampling, sampleID: input.sampleID,
+            observedAt: input.observedAt, now: input.now, remaining: 100, required: 110, eligible: true)
+        sampling = candidate.state; sampling.pendingAuthorized = true
+        state.samplingForecastState = sampling; source.reminderState = state
+        try store.updateSource(source)
+        let coordinator = ReminderCoordinator(repository: store, services: clock.services)
+        clock.authorization = .denied
+        #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { input }) == .denied)
+        clock.authorization = .authorized
+        #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { input }) == .idle)
+        #expect(clock.sends.isEmpty)
+        clock.date += 72 * 3600; input.now = clock.date; input.observedAt = clock.date; input.sampleID = UUID()
+        #expect(await coordinator.evaluate(airportID: f.first.id, inputProvider: { input }) == .sent)
+    }
 }

@@ -174,31 +174,26 @@ struct ReminderIntegrationTests {
         #expect(try f.source().reminderState?.lowNotified != true)
     }
 
-    @Test func successfulRefreshCanConfirmForecastAfterBusyRequestCompletes() async throws {
+    @Test func successfulSparseRefreshSendsForecastOnce() async throws {
         let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
-        try f.open(); try f.seedForecast(); f.makeModel()
-        #expect(f.model.forecastResult.estimate != nil)
-        f.advance(); f.used += 10_000_000
-        await f.model.refresh()
-        #expect(f.sends == 0)
-        f.advance(); f.used += 10_000_000
+        try f.open(); try f.seedSamplingForecast(); f.makeModel()
+        // First evaluation after upgrade is a newly saved reading.
+        f.advance(72 * 3600); f.used += 1_000_000_000
         await f.model.refresh()
         #expect(f.sends == 1)
         #expect(f.reasons.first?.map(\.kind) == [.forecast])
+        await f.model.evaluateReminders()
+        #expect(f.sends == 1)
     }
 
-    @Test func failedReadBreaksForecastConfirmationAndRecoveryRequiresTwoFreshObservations() async throws {
+    @Test func failedReadDoesNotSendSparseForecast() async throws {
         let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
-        try f.open(); try f.seedForecast(); f.makeModel()
-        f.advance(); await f.model.refresh()
+        try f.open(); try f.seedSamplingForecast(); f.makeModel()
+        await f.model.evaluateReminders()
+        f.advance(72 * 3600); f.failFetch = true
+        await f.model.refresh()
         #expect(f.sends == 0)
-        f.failFetch = true; f.advance(); await f.model.refresh()
-        #expect(try f.source().reminderState?.forecastTrigger == nil)
-        f.failFetch = false; f.advance(); await f.model.refresh()
-        #expect(f.sends == 0)
-        // Re-evaluation and elapsed time alone must not count as another success.
-        f.advance(); await f.model.evaluateReminders()
-        #expect(f.sends == 0)
+        f.failFetch = false; f.advance(72 * 3600); f.used += 1_000_000_000
         await f.model.refresh()
         #expect(f.sends == 1)
         #expect(f.reasons.first?.map(\.kind) == [.forecast])
@@ -272,5 +267,20 @@ struct ReminderIntegrationTests {
         #expect(try f.source().reminderPreferences?.thresholdMode == .percent)
         #expect(f.model.intervalMinutes == 4320 && !f.model.remindersEnabled)
         #expect(f.sends == 0)
+    }
+    @Test func changingIntervalClearsOnlyIncompleteSamplingRecovery() throws {
+        let f = try ReminderIntegrationFixture(); defer { f.cleanup() }
+        try f.open(); try f.seedSamplingForecast()
+        var source = try f.source(), state = ReminderState()
+        var sampling = SamplingForecastReminderPolicy.State(notified: true)
+        sampling.recoverySampleID = UUID()
+        state.samplingForecastState = sampling
+        source.reminderState = state
+        try f.store.updateSource(source)
+        f.makeModel()
+        f.model.applyInterval(10080)
+        let updated = try #require(f.source().reminderState?.samplingForecastState)
+        #expect(updated.notified)
+        #expect(updated.recoverySampleID == nil)
     }
 }

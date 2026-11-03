@@ -53,6 +53,9 @@ public struct ReminderInput: Sendable {
     /// Only explicit confirmed boundaries belong here; an estimated reset or counter rollback is insufficient.
     public var confirmedCycleID: UUID?
     public var confirmedSequenceID: UUID?
+    /// Nil preserves legacy continuous-forecast behavior for legacy callers.
+    public var samplingForecast: SamplingForecastContext?
+    public var resumeSamplingCandidate = false
 
     public init(now: Date, sampleID: UUID? = nil, observedAt: Date? = nil, remainingBytes: Double? = nil,
                 totalBytes: Double? = nil, expiry: Date? = nil, forecastRequiredBytes: Double? = nil,
@@ -68,6 +71,22 @@ public struct ReminderInput: Sendable {
     }
 }
 
+public struct SamplingForecastContext: Sendable {
+    public var scheduledBoundary: Date?
+    public var ruleID: UUID?
+    public var ruleEffectiveAt: Date?
+    public var priorSampleID: UUID?
+    public var priorObservedAt: Date?
+    public init(scheduledBoundary: Date?, ruleID: UUID?, ruleEffectiveAt: Date?,
+                priorSampleID: UUID? = nil, priorObservedAt: Date? = nil) {
+        self.scheduledBoundary = scheduledBoundary
+        self.ruleID = ruleID
+        self.ruleEffectiveAt = ruleEffectiveAt
+        self.priorSampleID = priorSampleID
+        self.priorObservedAt = priorObservedAt
+    }
+}
+
 public struct ReminderReason: Codable, Equatable, Hashable, Sendable {
     public enum Kind: String, Codable, CaseIterable, Sendable {
         case exhausted, expired, expiryDay, low, forecast, expirySoon
@@ -75,8 +94,10 @@ public struct ReminderReason: Codable, Equatable, Hashable, Sendable {
     public var kind: Kind
     public var expiry: Date?
     public var expiryUnverified: Bool
-    public init(kind: Kind, expiry: Date? = nil, expiryUnverified: Bool = false) {
+    public var forecastRiskID: UUID?
+    public init(kind: Kind, expiry: Date? = nil, expiryUnverified: Bool = false, forecastRiskID: UUID? = nil) {
         self.kind = kind; self.expiry = expiry; self.expiryUnverified = expiryUnverified
+        self.forecastRiskID = forecastRiskID
     }
 }
 
@@ -110,6 +131,7 @@ public struct ReminderState: Codable, Equatable, Sendable {
     public var lastObservedAt: Date?
     public var confirmedCycleID: UUID?
     public var confirmedSequenceID: UUID?
+    public var samplingForecastState: SamplingForecastReminderPolicy.State?
     public init() {}
 }
 
@@ -129,6 +151,19 @@ public enum ReminderPolicy {
         var reasons: [ReminderReason] = []
         guard input.globalEnabled, input.airportEnabled, !input.paused, !input.archived else {
             clearConfirmations(&state)
+            if let context = input.samplingForecast {
+                var sampling = state.samplingForecastState ?? SamplingForecastReminderPolicy.migrate(
+                    notified: state.forecastNotified, lastAcceptedAt: state.forecastLastAcceptedAt,
+                    latestSampleID: input.sampleID, latestObservedAt: input.observedAt, at: input.now)
+                if sampling.ruleID == nil { sampling.ruleID = context.ruleID }
+                sampling.pendingSampleID = nil
+                sampling.pendingAuthorized = nil
+                if let id = input.sampleID, let observed = input.observedAt, observed <= input.now,
+                   sampling.lastObservedAt.map({ observed > $0 }) ?? true {
+                    sampling.lastSampleID = id; sampling.lastObservedAt = observed
+                }
+                state.samplingForecastState = sampling
+            }
             return ReminderDecision(state: state, reasons: [])
         }
         // Only a newly saved successful observation advances a confirmation. Re-evaluation, wake and
@@ -183,21 +218,45 @@ public enum ReminderPolicy {
             state.lowRecovery = nil; state.exhaustionRecovery = nil
         }
 
-        if p.forecastEnabled, usageValid, input.forecastEligible, let remaining, remaining > 0,
-           let required = finiteNonnegative(input.forecastRequiredBytes) {
-            advance(&state.forecastRecovery, condition: required <= 0.90 * remaining,
-                    criterion: "forecastRecovery", input: input, isNew: newSample)
-            if state.forecastRecovery?.confirmed == true {
-                state.forecastNotified = false; state.forecastRecovery = nil; state.forecastTrigger = nil
+        if let context = input.samplingForecast,
+           state.samplingForecastState != nil || (p.forecastEnabled && usageValid && input.forecastEligible) {
+            var sampling = state.samplingForecastState ?? SamplingForecastReminderPolicy.migrate(
+                notified: state.forecastNotified, lastAcceptedAt: state.forecastLastAcceptedAt,
+                latestSampleID: original.lastSampleID ?? context.priorSampleID ?? input.sampleID,
+                latestObservedAt: original.lastObservedAt ?? context.priorObservedAt ?? input.observedAt, at: input.now)
+            if let oldRule = sampling.ruleID, oldRule != context.ruleID {
+                sampling = SamplingForecastReminderPolicy.ruleChanged(state: sampling,
+                    at: context.ruleEffectiveAt ?? input.now)
             }
-            let trigger = required >= 1.10 * remaining && cooldownPassed(state.forecastLastAcceptedAt, at: input.now)
-                && freshAfterCooldown(state.forecastLastAcceptedAt, observedAt: input.observedAt)
-            advance(&state.forecastTrigger, condition: trigger, criterion: "forecastTrigger", input: input, isNew: newSample)
-            if state.forecastTrigger?.confirmed == true, !state.forecastNotified {
-                reasons.append(ReminderReason(kind: .forecast))
-            }
-        } else {
+            sampling.ruleID = context.ruleID
+            let result = SamplingForecastReminderPolicy.evaluate(state: sampling, sampleID: input.sampleID,
+                observedAt: input.observedAt, now: input.now, remaining: input.remainingBytes,
+                required: input.forecastRequiredBytes,
+                eligible: p.forecastEnabled && usageValid && input.forecastEligible,
+                scheduledBoundary: context.scheduledBoundary, resumePending: input.resumeSamplingCandidate)
+            state.samplingForecastState = result.state
             state.forecastTrigger = nil; state.forecastRecovery = nil
+            if result.shouldNotify {
+                reasons.append(ReminderReason(kind: .forecast, forecastRiskID: result.state.riskID))
+            }
+        } else if input.samplingForecast == nil {
+            if p.forecastEnabled, usageValid, input.forecastEligible, let remaining, remaining > 0,
+               let required = finiteNonnegative(input.forecastRequiredBytes) {
+                advance(&state.forecastRecovery, condition: required <= 0.90 * remaining,
+                        criterion: "forecastRecovery", input: input, isNew: newSample)
+                if state.forecastRecovery?.confirmed == true {
+                    state.forecastNotified = false; state.forecastRecovery = nil; state.forecastTrigger = nil
+                }
+                let trigger = required >= 1.10 * remaining && cooldownPassed(state.forecastLastAcceptedAt, at: input.now)
+                    && freshAfterCooldown(state.forecastLastAcceptedAt, observedAt: input.observedAt)
+                advance(&state.forecastTrigger, condition: trigger, criterion: "forecastTrigger", input: input, isNew: newSample)
+                if state.forecastTrigger?.confirmed == true, !state.forecastNotified {
+                    reasons.append(ReminderReason(kind: .forecast))
+                }
+            } else {
+                state.forecastTrigger = nil; state.forecastRecovery = nil
+            }
+
         }
 
         if p.expiryEnabled, (2...30).contains(p.expiryLeadDays), let expiry = input.expiry,
@@ -229,7 +288,20 @@ public enum ReminderPolicy {
                 // Direct exhaustion subsumes the lower-level low notification for this event.
                 state.lowNotified = true; state.exhaustedNotified = true; state.lowLastAcceptedAt = date
             case .forecast:
-                state.forecastNotified = true; state.forecastLastAcceptedAt = date
+                if let risk = reason.forecastRiskID, let sampling = state.samplingForecastState {
+                    state.samplingForecastState = SamplingForecastReminderPolicy.markAccepted(state: sampling, riskID: risk, at: date)
+                } else if reason.forecastRiskID == nil {
+                    state.forecastNotified = true; state.forecastLastAcceptedAt = date
+                    // A pre-upgrade unresolved request has no risk identity.
+                    // Conservatively reserve the current migrated risk.
+                    if var sampling = state.samplingForecastState {
+                        sampling.notified = true
+                        sampling.lastAcceptedAt = date
+                        sampling.pendingSampleID = nil
+                        sampling.pendingAuthorized = nil
+                        state.samplingForecastState = sampling
+                    }
+                }
             case .expirySoon, .expiryDay, .expired:
                 guard let expiry = reason.expiry else { continue }
                 let stage = reason.kind == .expired ? 3 : reason.kind == .expiryDay ? 2 : 1
@@ -262,6 +334,9 @@ public enum ReminderPolicy {
     private static func clearConfirmations(_ state: inout ReminderState) {
         state.lowRecovery = nil; state.exhaustionRecovery = nil
         state.forecastTrigger = nil; state.forecastRecovery = nil
+        state.samplingForecastState?.recoverySampleID = nil
+        state.samplingForecastState?.pendingSampleID = nil
+        state.samplingForecastState?.pendingAuthorized = nil
     }
     private static func finiteNonnegative(_ value: Double?) -> Double? {
         guard let value, value.isFinite, value >= 0 else { return nil }; return value
@@ -275,5 +350,152 @@ public enum ReminderPolicy {
     private static func freshAfterCooldown(_ last: Date?, observedAt: Date?) -> Bool {
         guard let last else { return true }
         return observedAt.map { $0.timeIntervalSince(last) >= cooldown } ?? false
+    }
+}
+
+/// Sparse-sampling candidate rule. A candidate is not evidence of delivery.
+public enum SamplingForecastReminderPolicy {
+    public struct State: Codable, Equatable, Sendable {
+        public var notified: Bool
+        public var lastSampleID: UUID?
+        public var lastObservedAt: Date?
+        public var recoverySampleID: UUID?
+        public var riskID: UUID
+        public var trackingSince: Date?
+        public var cycleBoundary: Date?
+        public var lastAcceptedAt: Date?
+        public var pendingSampleID: UUID?
+        /// True only after permission was checked while this candidate was pending.
+        public var pendingAuthorized: Bool?
+        public var ruleID: UUID?
+        public init(notified: Bool = false, lastSampleID: UUID? = nil,
+                    lastObservedAt: Date? = nil, recoverySampleID: UUID? = nil) {
+            self.notified = notified
+            self.lastSampleID = lastSampleID
+            self.lastObservedAt = lastObservedAt
+            self.recoverySampleID = recoverySampleID
+            self.riskID = UUID()
+            self.trackingSince = nil
+            self.cycleBoundary = nil
+            self.lastAcceptedAt = nil
+            self.pendingSampleID = nil
+            self.pendingAuthorized = nil
+            self.ruleID = nil
+        }
+    }
+
+    public struct Result: Equatable, Sendable {
+        public var state: State
+        /// This is a candidate, not evidence that a notification was delivered.
+        public var shouldNotify: Bool
+    }
+
+    public static func evaluate(state original: State, sampleID: UUID?, observedAt: Date?, now: Date,
+                                remaining: Double?, required: Double?, eligible: Bool,
+                                scheduledBoundary: Date? = nil,
+                                resumePending: Bool = false) -> Result {
+        var state = original
+        guard eligible, let id = sampleID, let date = observedAt, date <= now,
+              let remaining, remaining.isFinite, remaining > 0,
+              let required, required.isFinite, required >= 0 else {
+            state.recoverySampleID = nil
+            state.pendingSampleID = nil
+            state.pendingAuthorized = nil
+            if let id = sampleID, let date = observedAt, date <= now,
+               state.lastObservedAt.map({ date > $0 }) ?? true {
+                state.lastSampleID = id
+                state.lastObservedAt = date
+            }
+            return Result(state: state, shouldNotify: false)
+        }
+        // A pending candidate belongs to the observation's cycle. A scheduled
+        // reset after that observation invalidates it even before a new sample.
+        if let boundary = scheduledBoundary, boundary > date, boundary <= now {
+            state.pendingSampleID = nil
+            state.pendingAuthorized = nil
+            state.recoverySampleID = nil
+            return Result(state: state, shouldNotify: false)
+        }
+        if resumePending, state.pendingSampleID == id, !state.notified,
+           required / remaining >= 1.10 {
+            return Result(state: state, shouldNotify: true)
+        }
+        guard id != state.lastSampleID,
+              state.lastObservedAt.map({ date > $0 }) ?? true else {
+            return Result(state: state, shouldNotify: false)
+        }
+        state.lastSampleID = id
+        state.lastObservedAt = date
+        state.pendingSampleID = nil
+        state.pendingAuthorized = nil
+        if state.trackingSince == nil { state.trackingSince = date }
+        if let boundary = scheduledBoundary, let trackingSince = state.trackingSince,
+           boundary > trackingSince, boundary <= date,
+           state.cycleBoundary.map({ boundary > $0 }) ?? true {
+            state.cycleBoundary = boundary
+            state.riskID = UUID()
+            state.notified = false
+            state.recoverySampleID = nil
+        }
+        if state.notified {
+            if required / remaining <= 0.90 {
+                if state.recoverySampleID != nil {
+                    state.notified = false
+                    state.riskID = UUID()
+                    state.recoverySampleID = nil
+                } else {
+                    state.recoverySampleID = id
+                }
+            } else {
+                state.recoverySampleID = nil
+            }
+            return Result(state: state, shouldNotify: false)
+        }
+        state.recoverySampleID = nil
+        let cooldownPassed = state.lastAcceptedAt.map {
+            date.timeIntervalSince($0) >= ReminderPolicy.cooldown && now.timeIntervalSince($0) >= ReminderPolicy.cooldown
+        } ?? true
+        let shouldNotify = cooldownPassed && required / remaining >= 1.10
+        if shouldNotify { state.pendingSampleID = id }
+        return Result(state: state, shouldNotify: shouldNotify)
+    }
+
+    /// Conservative migration does not infer a previously elapsed boundary.
+    public static func migrate(notified: Bool, lastAcceptedAt: Date?, latestSampleID: UUID?,
+                               latestObservedAt: Date?, at date: Date) -> State {
+        var state = State(notified: notified, lastSampleID: latestSampleID, lastObservedAt: latestObservedAt)
+        state.lastAcceptedAt = lastAcceptedAt
+        state.trackingSince = date
+        return state
+    }
+
+    /// A rule edit is not a new cycle. Only a later scheduled boundary can rearm it.
+    public static func ruleChanged(state original: State, at date: Date) -> State {
+        var state = original
+        state.trackingSince = date
+        state.cycleBoundary = nil
+        state.recoverySampleID = nil
+        state.pendingSampleID = nil
+        state.pendingAuthorized = nil
+        return state
+    }
+
+    /// Cancel a pending candidate without treating it as delivered.
+    public static func cancelPending(state original: State) -> State {
+        var state = original
+        state.pendingSampleID = nil
+        state.pendingAuthorized = nil
+        return state
+    }
+
+    /// Late acknowledgements cannot modify a subsequently rearmed risk.
+    public static func markAccepted(state original: State, riskID: UUID, at date: Date) -> State {
+        var state = original
+        guard state.riskID == riskID else { return state }
+        state.notified = true
+        state.pendingSampleID = nil
+        state.pendingAuthorized = nil
+        state.lastAcceptedAt = date
+        return state
     }
 }

@@ -89,5 +89,23 @@ import UserNotifications
         try store.updateSource(source)
     }
 
+    func seedSamplingForecast() throws {
+        now = Date(timeIntervalSince1970: 1_793_491_200) // 2026-11-01 UTC
+        expiry = nil
+        used = 85_000_000_000
+        try seed()
+        var source = try source(), ledger = Ledger(), rule = ResetRule()
+        rule.kind = .monthly; rule.day = 20; rule.timeZoneID = "UTC"
+        for index in 0..<4 {
+            try ledger.append(Subscription(upload: 0, download: UInt64(55 + index * 10) * 1_000_000_000,
+                                           total: 100_000_000_000, expiry: expiry),
+                              at: now.addingTimeInterval(Double(index - 3) * 3 * 86400))
+        }
+        source.ledger = ledger
+        source.resetRevisions = [ResetRevision(effectiveAt: nil, rule: rule)]
+        source.reminderPreferences = ReminderPreferences(lowEnabled: false, forecastEnabled: true, expiryEnabled: false)
+        try store.updateSource(source)
+    }
+
     func cleanup() { model?.stop(); original.cleanup() }
 }

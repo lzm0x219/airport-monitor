@@ -234,10 +234,10 @@ struct AirportEditor: View {
                 if session.reminders.thresholdMode == .legacyAbsoluteGB { note("保留旧版十进制 GB 阈值；改用百分比后按总额度判断。") }
                 VStack(alignment: .leading, spacing: 3) {
                     Toggle("预计不足", isOn: $session.reminders.forecastEnabled).toggleStyle(.checkbox)
-                    Text("提醒需要更密集的有效读数，仅靠每72小时采样无法满足。界面预测不直接触发提醒。")
+                    Text("按近期用量估计，可能在重置前用完时提醒。需要足够的有效采样。")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                        .help("预计不足提醒采用独立的连续预测资格，并需连续两次满足条件；已有符合要求的密集历史仍可参与判断。")
+                        .help("预计用量达到剩余流量的 110% 时提醒；预测仅供参考。")
                 }
                 HStack(spacing: 8) {
                     Toggle("即将到期", isOn: $session.reminders.expiryEnabled).toggleStyle(.checkbox)
