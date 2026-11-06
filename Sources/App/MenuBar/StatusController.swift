@@ -73,7 +73,7 @@ final class StatusController: NSObject, NSWindowDelegate {
             // the panel should dismiss it.
             if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type),
                event.window !== self.panel, event.window !== self.item.button?.window,
-               !self.statusButtonContains(NSEvent.mouseLocation) {
+               !self.statusItemContains(NSEvent.mouseLocation) {
                 self.closePopover()
             }
             return event
@@ -86,12 +86,7 @@ final class StatusController: NSObject, NSWindowDelegate {
                 guard let self else { return }
                 if released {
                     if self.logoFeedback?.isPressed == true { self.logoFeedback?.cancel() }
-                } else if self.panel.isVisible, eventTime > self.panelOpenedAt {
-                    // The status item can belong to another process's event stream.
-                    // Its action handles toggling; never treat that click as outside.
-                    if self.statusButtonContains(location) { return }
-                    self.closePopover()
-                }
+                } else { self.handleGlobalMouseDown(at: location, timestamp: eventTime) }
             }
         }
         // Main-window navigation must not rescan subscription history or redraw
@@ -113,9 +108,17 @@ final class StatusController: NSObject, NSWindowDelegate {
             Task { @MainActor in self?.render() }
         }
     }
-    private func statusButtonContains(_ screenPoint: NSPoint) -> Bool {
-        guard let button = item.button, let window = button.window else { return false }
-        return window.convertToScreen(button.convert(button.bounds, to: nil)).contains(screenPoint)
+    private func statusItemContains(_ screenPoint: NSPoint) -> Bool {
+        // The pointer can reach exactly the screen's top edge. CGRect.contains
+        // excludes maxY, although the system still routes that click to the item.
+        guard let frame = item.button?.window?.frame else { return false }
+        return screenPoint.x >= frame.minX && screenPoint.x < frame.maxX
+            && screenPoint.y >= frame.minY && screenPoint.y <= frame.maxY
+    }
+    func handleGlobalMouseDown(at location: NSPoint, timestamp: TimeInterval) {
+        guard panel.isVisible, timestamp > panelOpenedAt else { return }
+        if statusItemContains(location) { return }
+        closePopover()
     }
     deinit {
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }

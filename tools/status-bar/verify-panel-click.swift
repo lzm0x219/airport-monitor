@@ -14,7 +14,7 @@ import AppKit
         let controller = StatusController(workspace: workspace, openMain: {}, openSettings: {})
         let item = Mirror(reflecting: controller).children.first { $0.label == "item" }!.value as! NSStatusItem
         let button = item.button!
-        func click() {
+        func click(top: Bool = false) {
             // AppKit can initially expose a visible status-item window with
             // zero height. Also recalculate the point after display changes.
             let deadline = ProcessInfo.processInfo.systemUptime + 3
@@ -22,7 +22,8 @@ import AppKit
             while readyLocation == nil && ProcessInfo.processInfo.systemUptime < deadline {
                 if let window = button.window, window.isVisible,
                    button.bounds.width > 0, button.bounds.height > 0 {
-                    let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+                    let center = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+                    let point = top ? NSPoint(x: center.x, y: window.frame.height - 0.5) : center
                     if NSRect(origin: .zero, size: window.frame.size).contains(point) {
                         readyLocation = point
                         break
@@ -55,13 +56,29 @@ import AppKit
             print("FAIL: second click does not close the panel.")
             exit(1)
         }
+        click()
+        let window = button.window!
+        let buttonFrame = window.convertToScreen(button.convert(button.bounds, to: nil))
+        // The pointer is clamped to precisely the screen's upper edge.
+        let top = NSPoint(x: buttonFrame.midX, y: window.frame.maxY)
+        precondition(!buttonFrame.contains(top), "The test requires a status-window area above the button.")
+        controller.handleGlobalMouseDown(at: top, timestamp: ProcessInfo.processInfo.systemUptime + 1)
+        click(top: true)
+        guard !controller.isPopoverVisible else {
+            print("FAIL: clicking the top of the status item reopens the panel.")
+            exit(1)
+        }
+        click()
+        controller.handleGlobalMouseDown(at: NSPoint(x: window.frame.minX - 10, y: window.frame.midY),
+                                         timestamp: ProcessInfo.processInfo.systemUptime + 1)
+        precondition(!controller.isPopoverVisible, "A new outside press must close the panel.")
         for _ in 0..<20 {
             click()
             precondition(controller.isPopoverVisible, "Each click must open once.")
             click()
             precondition(!controller.isPopoverVisible, "Each second click must close once.")
         }
-        print("PASS: 42 native quick clicks open and close exactly once, including zero-pressure taps.")
+        print("PASS: top-edge and 42 native quick clicks open and close once; outside press closes the panel.")
         let model = workspace.menuModel!
         model.configureDemo(error: "模拟网络不可达")
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
